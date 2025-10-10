@@ -12,6 +12,8 @@ const DEFAULT_SENSITIVITY: f32 = 0.05;
 pub struct AppConfig {
     pub mouse_sensitivity: f32,
     pub key_bindings: KeyBindings,
+    pub present_mode: PresentModeSetting,
+    pub max_fps: Option<f32>,
 }
 
 impl AppConfig {
@@ -53,9 +55,21 @@ impl AppConfig {
             sensitivity = DEFAULT_SENSITIVITY;
         }
 
+        let present_mode = PresentModeSetting::from_raw(raw.present_mode);
+        let max_fps = raw.max_fps.and_then(|v| {
+            if v.is_finite() && v > 0.0 {
+                Some(v.min(2400.0))
+            } else {
+                warn!("Invalid max_fps {}; ignoring", v);
+                None
+            }
+        });
+
         Self {
             mouse_sensitivity: sensitivity,
             key_bindings,
+            present_mode,
+            max_fps,
         }
     }
 }
@@ -65,6 +79,8 @@ impl Default for AppConfig {
         Self {
             mouse_sensitivity: DEFAULT_SENSITIVITY,
             key_bindings: KeyBindings::default(),
+            present_mode: PresentModeSetting::VSync,
+            max_fps: None,
         }
     }
 }
@@ -97,6 +113,8 @@ impl KeyBindings {
 struct RawConfig {
     mouse_sensitivity: Option<f32>,
     keymap: RawKeyMap,
+    present_mode: Option<String>,
+    max_fps: Option<f32>,
 }
 
 impl Default for RawConfig {
@@ -104,6 +122,8 @@ impl Default for RawConfig {
         Self {
             mouse_sensitivity: Some(DEFAULT_SENSITIVITY),
             keymap: RawKeyMap::default(),
+            present_mode: Some("vsync".into()),
+            max_fps: None,
         }
     }
 }
@@ -222,4 +242,29 @@ fn key_from_str(name: &str) -> Option<VirtualKeyCode> {
 
 fn default_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.json")
+}
+
+#[derive(Clone, Copy)]
+pub enum PresentModeSetting {
+    Immediate,
+    Mailbox,
+    VSync,
+}
+
+impl PresentModeSetting {
+    fn from_raw(raw: Option<String>) -> Self {
+        match raw
+            .as_ref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("immediate") | Some("unlocked") | Some("off") => Self::Immediate,
+            Some("mailbox") | Some("relaxed") => Self::Mailbox,
+            Some("vsync") | Some("fifo") | Some("on") | None => Self::VSync,
+            Some(other) => {
+                warn!("Unknown present_mode '{}'; falling back to vsync", other);
+                Self::VSync
+            }
+        }
+    }
 }

@@ -4,8 +4,10 @@
     "move_forward": "W",
     "move_backward": "R",
     "move_left": "A",
-    "move_right": "D",
+    "move_right": "S",
     "move_up": "LAlt",
-    "move_down": "Space"
-  }
+    "move_down": "LShift"
+  },
+  "present_mode": "immediate",
+  "max_fps": 240
 }

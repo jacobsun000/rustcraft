@@ -324,6 +324,12 @@ impl State {
     async fn new(window: Window) -> Self {
         let size = window.inner_size();
 
+        let app_config = config::AppConfig::load();
+        let mouse_sensitivity = app_config.mouse_sensitivity;
+        let key_bindings = app_config.key_bindings.clone();
+        let present_mode_setting = app_config.present_mode;
+        let max_fps = app_config.max_fps;
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             dx12_shader_compiler: Default::default(),
@@ -357,12 +363,7 @@ impl State {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
-        let present_mode = surface_caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|mode| *mode == wgpu::PresentMode::Fifo)
-            .unwrap_or(surface_caps.present_modes[0]);
+        let present_mode = choose_present_mode(&surface_caps.present_modes, present_mode_setting);
         let alpha_mode = surface_caps.alpha_modes[0];
 
         let config = wgpu::SurfaceConfiguration {
@@ -483,10 +484,6 @@ impl State {
             multiview: None,
         });
 
-        let app_config = config::AppConfig::load();
-        let mouse_sensitivity = app_config.mouse_sensitivity;
-        let key_bindings = app_config.key_bindings.clone();
-
         let mut world = world::World::new();
         const CHUNK_RADIUS: i32 = 2;
 
@@ -555,7 +552,7 @@ impl State {
             camera_controller: CameraController::new(6.0, 90.0, key_bindings),
             debug_overlay,
             fps_counter: FpsCounter::default(),
-            mouse_state: MouseState::new(mouse_sensitivity),
+            mouse_state: MouseState::new(mouse_sensitivity, max_fps),
             _config: app_config,
             _world: world,
             last_frame: Instant::now(),
@@ -777,19 +774,50 @@ impl FpsCounter {
 struct MouseState {
     captured: bool,
     sensitivity: f32,
+    max_frame_time: Option<f32>,
 }
 
 impl MouseState {
-    fn new(sensitivity: f32) -> Self {
+    fn new(sensitivity: f32, max_fps: Option<f32>) -> Self {
         let mut clamped = sensitivity;
         if !clamped.is_finite() || clamped <= 0.0 {
             clamped = 0.001;
         }
+        let max_frame_time = max_fps.map(|fps| 1.0 / fps.max(1.0));
         Self {
             captured: false,
             sensitivity: clamped,
+            max_frame_time,
         }
     }
+}
+
+fn choose_present_mode(
+    available: &[wgpu::PresentMode],
+    requested: config::PresentModeSetting,
+) -> wgpu::PresentMode {
+    let candidates = match requested {
+        config::PresentModeSetting::Immediate => vec![
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::Mailbox,
+            wgpu::PresentMode::Fifo,
+        ],
+        config::PresentModeSetting::Mailbox => vec![
+            wgpu::PresentMode::Mailbox,
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::Fifo,
+        ],
+        config::PresentModeSetting::VSync => vec![
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::Mailbox,
+            wgpu::PresentMode::Immediate,
+        ],
+    };
+
+    candidates
+        .into_iter()
+        .find(|mode| available.contains(mode))
+        .unwrap_or(wgpu::PresentMode::Fifo)
 }
 
 async fn run() {
@@ -848,6 +876,12 @@ async fn run() {
                 }
             }
             Event::MainEventsCleared => {
+                if let Some(frame_cap) = state.mouse_state.max_frame_time {
+                    let elapsed = state.last_frame.elapsed().as_secs_f32();
+                    if elapsed < frame_cap {
+                        std::thread::sleep(std::time::Duration::from_secs_f32(frame_cap - elapsed));
+                    }
+                }
                 state.window().request_redraw();
             }
             _ => {}
