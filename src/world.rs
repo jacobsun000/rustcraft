@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::{collections::HashMap, f32::consts::PI};
 
 pub const CHUNK_SIZE: usize = 16;
 const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
@@ -7,6 +7,13 @@ const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 pub enum Block {
     Air,
     Solid([f32; 3]),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkCoord {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
 }
 
 pub struct Chunk {
@@ -35,28 +42,69 @@ impl Chunk {
     }
 }
 
-pub struct MeshVertex {
-    pub position: [f32; 3],
-    pub color: [f32; 3],
+pub struct World {
+    chunks: HashMap<ChunkCoord, Chunk>,
 }
 
-pub struct Mesh {
-    pub vertices: Vec<MeshVertex>,
-    pub indices: Vec<u32>,
+impl World {
+    pub fn new() -> Self {
+        Self {
+            chunks: HashMap::new(),
+        }
+    }
+
+    pub fn ensure_chunk(&mut self, coord: ChunkCoord) {
+        self.chunks
+            .entry(coord)
+            .or_insert_with(|| generate_chunk(coord));
+    }
+
+    pub fn chunk(&self, coord: ChunkCoord) -> Option<&Chunk> {
+        self.chunks.get(&coord)
+    }
+
+    pub fn block_at(&self, world_x: i32, world_y: i32, world_z: i32) -> Block {
+        let chunk_coord = ChunkCoord {
+            x: div_floor(world_x, CHUNK_SIZE as i32),
+            y: div_floor(world_y, CHUNK_SIZE as i32),
+            z: div_floor(world_z, CHUNK_SIZE as i32),
+        };
+
+        let local_x = mod_floor(world_x, CHUNK_SIZE as i32) as usize;
+        let local_y = mod_floor(world_y, CHUNK_SIZE as i32) as usize;
+        let local_z = mod_floor(world_z, CHUNK_SIZE as i32) as usize;
+
+        self.chunk(chunk_coord)
+            .map(|chunk| chunk.get(local_x, local_y, local_z))
+            .unwrap_or(Block::Air)
+    }
 }
 
-pub fn generate_demo_chunk() -> Chunk {
+pub fn chunk_origin(coord: ChunkCoord) -> [f32; 3] {
+    let half = CHUNK_SIZE as f32 / 2.0;
+    [
+        coord.x as f32 * CHUNK_SIZE as f32 - half,
+        coord.y as f32 * CHUNK_SIZE as f32,
+        coord.z as f32 * CHUNK_SIZE as f32 - half,
+    ]
+}
+
+fn generate_chunk(coord: ChunkCoord) -> Chunk {
     let mut chunk = Chunk::new();
+    let base_x = coord.x * CHUNK_SIZE as i32;
+    let base_y = coord.y * CHUNK_SIZE as i32;
+    let base_z = coord.z * CHUNK_SIZE as i32;
 
     for y in 0..CHUNK_SIZE {
+        let world_y = base_y + y as i32;
         for z in 0..CHUNK_SIZE {
+            let world_z = base_z + z as i32;
             for x in 0..CHUNK_SIZE {
-                let fx = x as f32 / CHUNK_SIZE as f32;
-                let fz = z as f32 / CHUNK_SIZE as f32;
-                let height = ((fx * PI).sin() * (fz * PI).cos() * 4.0 + 6.0).round() as usize;
+                let world_x = base_x + x as i32;
+                let height = terrain_height(world_x, world_z);
 
-                if y <= height.min(CHUNK_SIZE - 1) {
-                    let color = block_color(y);
+                if world_y <= height {
+                    let color = block_color(world_y, height);
                     chunk.set(x, y, z, Block::Solid(color));
                 }
             }
@@ -66,164 +114,38 @@ pub fn generate_demo_chunk() -> Chunk {
     chunk
 }
 
-fn block_color(y: usize) -> [f32; 3] {
-    if y > CHUNK_SIZE / 2 {
-        [0.6, 0.8, 0.4]
-    } else if y > CHUNK_SIZE / 4 {
-        [0.5, 0.4, 0.25]
+fn terrain_height(x: i32, z: i32) -> i32 {
+    let scale = 1.0 / 12.0;
+    let fx = x as f32 * scale;
+    let fz = z as f32 * scale;
+    let hills = (fx * PI).sin() * 3.0 + (fz * PI * 0.5).cos() * 2.0;
+    let base = 6.0;
+    (base + hills).round() as i32
+}
+
+fn block_color(world_y: i32, surface_height: i32) -> [f32; 3] {
+    if world_y == surface_height {
+        [0.5, 0.7, 0.3]
+    } else if world_y >= surface_height - 3 {
+        [0.45, 0.35, 0.2]
     } else {
-        [0.4, 0.3, 0.2]
+        [0.35, 0.35, 0.4]
     }
 }
 
-pub fn build_mesh(chunk: &Chunk) -> Mesh {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let offset = [-(CHUNK_SIZE as f32) / 2.0, 0.0, -(CHUNK_SIZE as f32) / 2.0];
-
-    for y in 0..CHUNK_SIZE {
-        for z in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                if let Block::Solid(color) = chunk.get(x, y, z) {
-                    add_block_faces(
-                        [x as i32, y as i32, z as i32],
-                        color,
-                        chunk,
-                        offset,
-                        &mut vertices,
-                        &mut indices,
-                    );
-                }
-            }
-        }
+fn div_floor(a: i32, b: i32) -> i32 {
+    let mut q = a / b;
+    let r = a % b;
+    if (r > 0 && b < 0) || (r < 0 && b > 0) {
+        q -= 1;
     }
-
-    Mesh { vertices, indices }
+    q
 }
 
-fn add_block_faces(
-    position: [i32; 3],
-    color: [f32; 3],
-    chunk: &Chunk,
-    offset: [f32; 3],
-    vertices: &mut Vec<MeshVertex>,
-    indices: &mut Vec<u32>,
-) {
-    const FACES: [Face; 6] = [
-        Face::new(
-            [0, 0, -1],
-            [
-                [0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0],
-            ],
-        ),
-        Face::new(
-            [0, 0, 1],
-            [
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-                [0.0, 1.0, 1.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [-1, 0, 0],
-            [
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [1, 0, 0],
-            [
-                [1.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [1.0, 0.0, 1.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [0, -1, 0],
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [0, 1, 0],
-            [
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 1.0],
-                [1.0, 1.0, 0.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-    ];
-
-    for face in FACES {
-        let neighbor_pos = [
-            position[0] + face.normal[0],
-            position[1] + face.normal[1],
-            position[2] + face.normal[2],
-        ];
-
-        if is_air(chunk, neighbor_pos) {
-            let base_index = vertices.len() as u32;
-            for vertex in face.vertices {
-                let world_position = [
-                    vertex[0] + position[0] as f32 + offset[0],
-                    vertex[1] + position[1] as f32 + offset[1],
-                    vertex[2] + position[2] as f32 + offset[2],
-                ];
-                vertices.push(MeshVertex {
-                    position: world_position,
-                    color,
-                });
-            }
-
-            indices.extend_from_slice(&[
-                base_index,
-                base_index + 1,
-                base_index + 2,
-                base_index + 2,
-                base_index + 1,
-                base_index + 3,
-            ]);
-        }
+fn mod_floor(a: i32, b: i32) -> i32 {
+    let mut r = a % b;
+    if (r > 0 && b < 0) || (r < 0 && b > 0) {
+        r += b;
     }
-}
-
-fn is_air(chunk: &Chunk, position: [i32; 3]) -> bool {
-    if position
-        .iter()
-        .any(|&coord| coord < 0 || coord >= CHUNK_SIZE as i32)
-    {
-        return true;
-    }
-
-    match chunk.get(
-        position[0] as usize,
-        position[1] as usize,
-        position[2] as usize,
-    ) {
-        Block::Air => true,
-        Block::Solid(_) => false,
-    }
-}
-
-struct Face {
-    normal: [i32; 3],
-    vertices: [[f32; 3]; 4],
-}
-
-impl Face {
-    const fn new(normal: [i32; 3], vertices: [[f32; 3]; 4]) -> Self {
-        Self { normal, vertices }
-    }
+    r
 }

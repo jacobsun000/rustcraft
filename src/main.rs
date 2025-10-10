@@ -8,6 +8,7 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+mod mesh;
 mod world;
 
 struct State {
@@ -28,6 +29,7 @@ struct State {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_controller: CameraController,
+    _world: world::World,
     last_frame: Instant,
 }
 
@@ -212,7 +214,7 @@ impl CameraController {
                 self.forward_pressed = is_pressed;
                 true
             }
-            VirtualKeyCode::R => {
+            VirtualKeyCode::S => {
                 self.backward_pressed = is_pressed;
                 true
             }
@@ -220,11 +222,11 @@ impl CameraController {
                 self.left_pressed = is_pressed;
                 true
             }
-            VirtualKeyCode::S => {
+            VirtualKeyCode::D => {
                 self.right_pressed = is_pressed;
                 true
             }
-            VirtualKeyCode::LAlt => {
+            VirtualKeyCode::Space => {
                 self.up_pressed = is_pressed;
                 true
             }
@@ -348,7 +350,7 @@ impl State {
 
         let depth_texture = DepthTexture::create(&device, &config);
 
-        let camera = Camera::new(Vec3::new(0.0, 8.0, 25.0), -90.0, -20.0);
+        let camera = Camera::new(Vec3::new(0.0, 24.0, 60.0), -90.0, -20.0);
         let projection = Projection::new(config.width, config.height, 60.0, 0.1, 100.0);
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update(&camera, &projection);
@@ -423,28 +425,43 @@ impl State {
             multiview: None,
         });
 
-        let chunk = world::generate_demo_chunk();
-        let mesh = world::build_mesh(&chunk);
-        let vertices: Vec<Vertex> = mesh
-            .vertices
-            .into_iter()
-            .map(|v| Vertex {
-                position: v.position,
-                color: v.color,
-            })
-            .collect();
+        let mut world = world::World::new();
+        const CHUNK_RADIUS: i32 = 2;
+
+        for z in -CHUNK_RADIUS..=CHUNK_RADIUS {
+            for x in -CHUNK_RADIUS..=CHUNK_RADIUS {
+                let coord = world::ChunkCoord { x, y: 0, z };
+                world.ensure_chunk(coord);
+            }
+        }
+
+        let mut combined_vertices: Vec<Vertex> = Vec::new();
+        let mut combined_indices: Vec<u32> = Vec::new();
+
+        for z in -CHUNK_RADIUS..=CHUNK_RADIUS {
+            for x in -CHUNK_RADIUS..=CHUNK_RADIUS {
+                let coord = world::ChunkCoord { x, y: 0, z };
+                let mesh = mesh::build_chunk_mesh(&world, coord);
+                let base_index = combined_vertices.len() as u32;
+                combined_vertices.extend(mesh.vertices.into_iter().map(|v| Vertex {
+                    position: v.position,
+                    color: v.color,
+                }));
+                combined_indices.extend(mesh.indices.into_iter().map(|i| i + base_index));
+            }
+        }
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Chunk vertex buffer"),
-            contents: bytemuck::cast_slice(&vertices),
+            label: Some("Terrain vertex buffer"),
+            contents: bytemuck::cast_slice(&combined_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Chunk index buffer"),
-            contents: bytemuck::cast_slice(&mesh.indices),
+            label: Some("Terrain index buffer"),
+            contents: bytemuck::cast_slice(&combined_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let index_count = mesh.indices.len() as u32;
+        let index_count = combined_indices.len() as u32;
 
         Self {
             window,
@@ -464,6 +481,7 @@ impl State {
             camera_buffer,
             camera_bind_group,
             camera_controller: CameraController::new(6.0, 90.0),
+            _world: world,
             last_frame: Instant::now(),
         }
     }
