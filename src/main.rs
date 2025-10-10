@@ -5,9 +5,10 @@ use wgpu::util::DeviceExt;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    window::{CursorGrabMode, Window, WindowBuilder},
 };
 
+mod config;
 mod mesh;
 mod text;
 mod texture;
@@ -37,6 +38,8 @@ struct State {
     camera_controller: CameraController,
     debug_overlay: text::DebugOverlay,
     fps_counter: FpsCounter,
+    mouse_state: MouseState,
+    _config: config::AppConfig,
     _world: world::World,
     last_frame: Instant,
     last_frame_time: f32,
@@ -191,6 +194,7 @@ impl CameraUniform {
 }
 
 struct CameraController {
+    key_bindings: config::KeyBindings,
     speed: f32,
     turn_speed: f32,
     forward_pressed: bool,
@@ -203,11 +207,14 @@ struct CameraController {
     yaw_right_pressed: bool,
     pitch_up_pressed: bool,
     pitch_down_pressed: bool,
+    yaw: f32,
+    pitch: f32,
 }
 
 impl CameraController {
-    fn new(speed: f32, turn_speed: f32) -> Self {
+    fn new(speed: f32, turn_speed: f32, key_bindings: config::KeyBindings) -> Self {
         Self {
+            key_bindings,
             speed,
             turn_speed,
             forward_pressed: false,
@@ -220,56 +227,54 @@ impl CameraController {
             yaw_right_pressed: false,
             pitch_up_pressed: false,
             pitch_down_pressed: false,
+            yaw: 0.0,
+            pitch: 0.0,
         }
     }
 
     fn process_keyboard(&mut self, key: VirtualKeyCode, is_pressed: bool) -> bool {
-        match key {
-            VirtualKeyCode::W => {
-                self.forward_pressed = is_pressed;
-                true
+        if key == self.key_bindings.forward {
+            self.forward_pressed = is_pressed;
+            true
+        } else if key == self.key_bindings.backward {
+            self.backward_pressed = is_pressed;
+            true
+        } else if key == self.key_bindings.left {
+            self.left_pressed = is_pressed;
+            true
+        } else if key == self.key_bindings.right {
+            self.right_pressed = is_pressed;
+            true
+        } else if key == self.key_bindings.up {
+            self.up_pressed = is_pressed;
+            true
+        } else if key == self.key_bindings.down {
+            self.down_pressed = is_pressed;
+            true
+        } else {
+            match key {
+                VirtualKeyCode::Left => {
+                    self.yaw_left_pressed = is_pressed;
+                    true
+                }
+                VirtualKeyCode::Right => {
+                    self.yaw_right_pressed = is_pressed;
+                    true
+                }
+                VirtualKeyCode::Up => {
+                    self.pitch_up_pressed = is_pressed;
+                    true
+                }
+                VirtualKeyCode::Down => {
+                    self.pitch_down_pressed = is_pressed;
+                    true
+                }
+                _ => false,
             }
-            VirtualKeyCode::S => {
-                self.backward_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::A => {
-                self.left_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::D => {
-                self.right_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::Space => {
-                self.up_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::LShift => {
-                self.down_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::Left => {
-                self.yaw_left_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::Right => {
-                self.yaw_right_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::Up => {
-                self.pitch_up_pressed = is_pressed;
-                true
-            }
-            VirtualKeyCode::Down => {
-                self.pitch_down_pressed = is_pressed;
-                true
-            }
-            _ => false,
         }
     }
 
-    fn update_camera(&self, camera: &mut Camera, dt: f32) {
+    fn update_camera(&mut self, camera: &mut Camera, dt: f32) {
         let forward = camera.forward();
         let right = forward.cross(Vec3::Y).normalize_or_zero();
 
@@ -300,9 +305,18 @@ impl CameraController {
         let yaw_delta = (self.yaw_right_pressed as i32 - self.yaw_left_pressed as i32) as f32;
         let pitch_delta = (self.pitch_up_pressed as i32 - self.pitch_down_pressed as i32) as f32;
 
-        camera.yaw += yaw_delta * self.turn_speed * dt;
-        camera.pitch =
-            (camera.pitch + pitch_delta * self.turn_speed * dt).clamp(-89.0_f32, 89.0_f32);
+        self.yaw += yaw_delta * self.turn_speed * dt;
+        self.pitch = (self.pitch + pitch_delta * self.turn_speed * dt).clamp(-89.0_f32, 89.0_f32);
+
+        camera.yaw += self.yaw;
+        camera.pitch = (camera.pitch + self.pitch).clamp(-89.0_f32, 89.0_f32);
+        self.yaw = 0.0;
+        self.pitch = 0.0;
+    }
+
+    fn add_mouse_delta(&mut self, delta: (f32, f32), sensitivity: f32) {
+        self.yaw += delta.0 * sensitivity;
+        self.pitch -= delta.1 * sensitivity;
     }
 }
 
@@ -469,6 +483,10 @@ impl State {
             multiview: None,
         });
 
+        let app_config = config::AppConfig::load();
+        let mouse_sensitivity = app_config.mouse_sensitivity;
+        let key_bindings = app_config.key_bindings.clone();
+
         let mut world = world::World::new();
         const CHUNK_RADIUS: i32 = 2;
 
@@ -534,9 +552,11 @@ impl State {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            camera_controller: CameraController::new(6.0, 90.0),
+            camera_controller: CameraController::new(6.0, 90.0, key_bindings),
             debug_overlay,
             fps_counter: FpsCounter::default(),
+            mouse_state: MouseState::new(mouse_sensitivity),
+            _config: app_config,
             _world: world,
             last_frame: Instant::now(),
             last_frame_time: 0.0,
@@ -571,12 +591,45 @@ impl State {
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(keycode) = input.virtual_keycode {
                     let is_pressed = input.state == ElementState::Pressed;
+                    if is_pressed && keycode == VirtualKeyCode::Escape {
+                        if self.mouse_state.captured {
+                            self.set_mouse_capture(false);
+                            return true;
+                        }
+                    }
                     self.camera_controller.process_keyboard(keycode, is_pressed)
                 } else {
                     false
                 }
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if *button == MouseButton::Left && *state == ElementState::Pressed {
+                    if !self.mouse_state.captured {
+                        self.set_mouse_capture(true);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            WindowEvent::Focused(false) => {
+                self.set_mouse_capture(false);
+                false
+            }
             _ => false,
+        }
+    }
+
+    fn device_input(&mut self, event: &DeviceEvent) {
+        if !self.mouse_state.captured {
+            return;
+        }
+
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.camera_controller.add_mouse_delta(
+                (delta.0 as f32, delta.1 as f32),
+                self.mouse_state.sensitivity,
+            );
         }
     }
 
@@ -667,6 +720,38 @@ impl State {
 
         Ok(())
     }
+
+    fn set_mouse_capture(&mut self, capture: bool) {
+        if self.mouse_state.captured == capture {
+            return;
+        }
+
+        if capture {
+            if let Err(err) = self.window.set_cursor_grab(CursorGrabMode::Locked) {
+                log::warn!("Failed to lock cursor: {err:?}. Falling back to confined mode.");
+                if let Err(err) = self.window.set_cursor_grab(CursorGrabMode::Confined) {
+                    log::warn!("Unable to grab cursor: {err:?}");
+                }
+            }
+            self.window.set_cursor_visible(false);
+        } else {
+            if let Err(err) = self.window.set_cursor_grab(CursorGrabMode::None) {
+                log::warn!("Failed to release cursor grab: {err:?}");
+            }
+            self.window.set_cursor_visible(true);
+        }
+
+        self.mouse_state.captured = capture;
+    }
+
+    fn handle_escape(&mut self) -> bool {
+        if self.mouse_state.captured {
+            self.set_mouse_capture(false);
+            false
+        } else {
+            true
+        }
+    }
 }
 
 #[derive(Default)]
@@ -689,6 +774,24 @@ impl FpsCounter {
     }
 }
 
+struct MouseState {
+    captured: bool,
+    sensitivity: f32,
+}
+
+impl MouseState {
+    fn new(sensitivity: f32) -> Self {
+        let mut clamped = sensitivity;
+        if !clamped.is_finite() || clamped <= 0.0 {
+            clamped = 0.001;
+        }
+        Self {
+            captured: false,
+            sensitivity: clamped,
+        }
+    }
+}
+
 async fn run() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -708,8 +811,8 @@ async fn run() {
             } if window_id == state.window().id() => {
                 if !state.input(event) {
                     match event {
-                        WindowEvent::CloseRequested
-                        | WindowEvent::KeyboardInput {
+                        WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                        WindowEvent::KeyboardInput {
                             input:
                                 KeyboardInput {
                                     state: ElementState::Pressed,
@@ -717,7 +820,11 @@ async fn run() {
                                     ..
                                 },
                             ..
-                        } => *control_flow = ControlFlow::Exit,
+                        } => {
+                            if state.handle_escape() {
+                                *control_flow = ControlFlow::Exit;
+                            }
+                        }
                         WindowEvent::Resized(physical_size) => {
                             state.resize(*physical_size);
                         }
@@ -727,6 +834,9 @@ async fn run() {
                         _ => {}
                     }
                 }
+            }
+            Event::DeviceEvent { ref event, .. } => {
+                state.device_input(event);
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 state.update();

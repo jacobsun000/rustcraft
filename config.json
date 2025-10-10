@@ -1,0 +1,11 @@
+{
+  "mouse_sensitivity": 0.05,
+  "keymap": {
+    "move_forward": "W",
+    "move_backward": "R",
+    "move_left": "A",
+    "move_right": "D",
+    "move_up": "LAlt",
+    "move_down": "Space"
+  }
+}
