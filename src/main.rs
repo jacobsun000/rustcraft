@@ -8,6 +8,8 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+mod world;
+
 struct State {
     window: Window,
     surface: wgpu::Surface,
@@ -17,7 +19,9 @@ struct State {
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    depth_texture: DepthTexture,
     camera: Camera,
     projection: Projection,
     camera_uniform: CameraUniform,
@@ -55,20 +59,36 @@ impl Vertex {
     }
 }
 
-const TRIANGLE_VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-    },
-];
+struct DepthTexture {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+impl DepthTexture {
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+
+    fn create(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            _texture: texture,
+            view,
+        }
+    }
+}
 
 struct Camera {
     position: Vec3,
@@ -326,7 +346,9 @@ impl State {
 
         surface.configure(&device, &config);
 
-        let camera = Camera::new(Vec3::new(0.0, 1.5, 4.0), -90.0, 0.0);
+        let depth_texture = DepthTexture::create(&device, &config);
+
+        let camera = Camera::new(Vec3::new(0.0, 8.0, 25.0), -90.0, -20.0);
         let projection = Projection::new(config.width, config.height, 60.0, 0.1, 100.0);
         let mut camera_uniform = CameraUniform::new();
         camera_uniform.update(&camera, &projection);
@@ -390,17 +412,39 @@ impl State {
                 })],
             }),
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DepthTexture::FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
 
+        let chunk = world::generate_demo_chunk();
+        let mesh = world::build_mesh(&chunk);
+        let vertices: Vec<Vertex> = mesh
+            .vertices
+            .into_iter()
+            .map(|v| Vertex {
+                position: v.position,
+                color: v.color,
+            })
+            .collect();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Triangle vertex buffer"),
-            contents: bytemuck::cast_slice(TRIANGLE_VERTICES),
+            label: Some("Chunk vertex buffer"),
+            contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let vertex_count = TRIANGLE_VERTICES.len() as u32;
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Chunk index buffer"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let index_count = mesh.indices.len() as u32;
 
         Self {
             window,
@@ -411,7 +455,9 @@ impl State {
             size,
             render_pipeline,
             vertex_buffer,
-            vertex_count,
+            index_buffer,
+            index_count,
+            depth_texture,
             camera,
             projection,
             camera_uniform,
@@ -435,6 +481,7 @@ impl State {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+        self.depth_texture = DepthTexture::create(&self.device, &self.config);
         self.projection.resize(new_size.width, new_size.height);
         self.camera_uniform.update(&self.camera, &self.projection);
         self.queue.write_buffer(
@@ -501,12 +548,20 @@ impl State {
                         store: true,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.vertex_count, 0..1);
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
 
         self.queue.submit(iter::once(encoder.finish()));
