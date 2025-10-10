@@ -1,9 +1,11 @@
-use crate::world::{Block, CHUNK_SIZE, ChunkCoord, World, chunk_origin};
+use crate::texture::AtlasLayout;
+use crate::world::{Block, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World, chunk_origin};
 
 #[derive(Clone, Copy)]
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
+    pub uv: [f32; 2],
 }
 
 pub struct Mesh {
@@ -11,7 +13,7 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
-pub fn build_chunk_mesh(world: &World, coord: ChunkCoord) -> Mesh {
+pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -> Mesh {
     let chunk = world
         .chunk(coord)
         .expect("chunk must be generated before meshing");
@@ -23,9 +25,11 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord) -> Mesh {
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                if let Block::Solid(color) = chunk.get(x, y, z) {
+                if let Block::Solid(kind) = chunk.get(x, y, z) {
                     add_block_faces(
                         world,
+                        atlas,
+                        kind,
                         [
                             coord.x * CHUNK_SIZE as i32 + x as i32,
                             coord.y * CHUNK_SIZE as i32 + y as i32,
@@ -33,7 +37,6 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord) -> Mesh {
                         ],
                         origin,
                         [x as f32, y as f32, z as f32],
-                        color,
                         &mut vertices,
                         &mut indices,
                     );
@@ -47,71 +50,15 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord) -> Mesh {
 
 fn add_block_faces(
     world: &World,
+    atlas: &AtlasLayout,
+    kind: BlockKind,
     world_position: [i32; 3],
     chunk_origin: [f32; 3],
     block_offset: [f32; 3],
-    color: [f32; 3],
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
 ) {
-    const FACES: [Face; 6] = [
-        Face::new(
-            [0, 0, -1],
-            [
-                [0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0],
-            ],
-        ),
-        Face::new(
-            [0, 0, 1],
-            [
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-                [0.0, 1.0, 1.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [-1, 0, 0],
-            [
-                [0.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [1, 0, 0],
-            [
-                [1.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0],
-                [1.0, 0.0, 1.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [0, -1, 0],
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [1.0, 0.0, 1.0],
-            ],
-        ),
-        Face::new(
-            [0, 1, 0],
-            [
-                [0.0, 1.0, 0.0],
-                [0.0, 1.0, 1.0],
-                [1.0, 1.0, 0.0],
-                [1.0, 1.0, 1.0],
-            ],
-        ),
-    ];
-
-    for face in FACES {
+    for face in FACES.iter() {
         let neighbor_world = [
             world_position[0] + face.normal[0],
             world_position[1] + face.normal[1],
@@ -122,14 +69,23 @@ fn add_block_faces(
             world.block_at(neighbor_world[0], neighbor_world[1], neighbor_world[2]),
             Block::Air
         ) {
+            let tile = kind.tile_for_face(face.direction);
+            let shade = face.light;
+            let color = [shade, shade, shade];
+
             let base_index = vertices.len() as u32;
-            for vertex in face.vertices {
+            for (corner, uv) in face.vertices.iter().zip(face.uvs.iter()) {
                 let position = [
-                    chunk_origin[0] + block_offset[0] + vertex[0],
-                    chunk_origin[1] + block_offset[1] + vertex[1],
-                    chunk_origin[2] + block_offset[2] + vertex[2],
+                    chunk_origin[0] + block_offset[0] + corner[0],
+                    chunk_origin[1] + block_offset[1] + corner[1],
+                    chunk_origin[2] + block_offset[2] + corner[2],
                 ];
-                vertices.push(MeshVertex { position, color });
+                let tex_uv = atlas.map_uv(tile, *uv);
+                vertices.push(MeshVertex {
+                    position,
+                    color,
+                    uv: tex_uv,
+                });
             }
 
             indices.extend_from_slice(&[
@@ -147,10 +103,100 @@ fn add_block_faces(
 struct Face {
     normal: [i32; 3],
     vertices: [[f32; 3]; 4],
+    uvs: [[f32; 2]; 4],
+    direction: FaceDirection,
+    light: f32,
 }
 
 impl Face {
-    const fn new(normal: [i32; 3], vertices: [[f32; 3]; 4]) -> Self {
-        Self { normal, vertices }
+    const fn new(
+        normal: [i32; 3],
+        vertices: [[f32; 3]; 4],
+        uvs: [[f32; 2]; 4],
+        direction: FaceDirection,
+        light: f32,
+    ) -> Self {
+        Self {
+            normal,
+            vertices,
+            uvs,
+            direction,
+            light,
+        }
     }
 }
+
+const FACES: [Face; 6] = [
+    Face::new(
+        [0, 0, -1],
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ],
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+        FaceDirection::NegZ,
+        0.85,
+    ),
+    Face::new(
+        [0, 0, 1],
+        [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+        FaceDirection::PosZ,
+        0.85,
+    ),
+    Face::new(
+        [-1, 0, 0],
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+        ],
+        [[1.0, 0.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        FaceDirection::NegX,
+        0.75,
+    ),
+    Face::new(
+        [1, 0, 0],
+        [
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+        FaceDirection::PosX,
+        0.75,
+    ),
+    Face::new(
+        [0, -1, 0],
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ],
+        [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0], [1.0, 0.0]],
+        FaceDirection::NegY,
+        0.6,
+    ),
+    Face::new(
+        [0, 1, 0],
+        [
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ],
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+        FaceDirection::PosY,
+        1.0,
+    ),
+];

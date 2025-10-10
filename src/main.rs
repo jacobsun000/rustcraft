@@ -1,4 +1,4 @@
-use std::{iter, time::Instant};
+use std::{iter, path::Path, time::Instant};
 
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
@@ -9,6 +9,8 @@ use winit::{
 };
 
 mod mesh;
+mod text;
+mod texture;
 mod world;
 
 struct State {
@@ -22,6 +24,10 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    vertex_count: u32,
+    chunk_count: u32,
+    atlas_bind_group: wgpu::BindGroup,
+    _block_atlas: texture::TextureAtlas,
     depth_texture: DepthTexture,
     camera: Camera,
     projection: Projection,
@@ -29,8 +35,11 @@ struct State {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera_controller: CameraController,
+    debug_overlay: text::DebugOverlay,
+    fps_counter: FpsCounter,
     _world: world::World,
     last_frame: Instant,
+    last_frame_time: f32,
 }
 
 #[repr(C)]
@@ -38,6 +47,7 @@ struct State {
 struct Vertex {
     position: [f32; 3],
     color: [f32; 3],
+    uv: [f32; 2],
 }
 
 impl Vertex {
@@ -55,6 +65,11 @@ impl Vertex {
                     offset: 12,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }
@@ -385,19 +400,48 @@ impl State {
             }],
         });
 
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Texture bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let atlas_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/textures/blocks.json");
+        let block_atlas = texture::TextureAtlas::load(&device, &queue, atlas_path)
+            .expect("Failed to load block atlas");
+        let atlas_layout = block_atlas.layout();
+        let atlas_bind_group = block_atlas.create_bind_group(&device, &texture_bind_group_layout);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Triangle shader"),
+            label: Some("World shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Triangle pipeline layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
+            label: Some("World pipeline layout"),
+            bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Triangle pipeline"),
+            label: Some("World pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -438,16 +482,19 @@ impl State {
         let mut combined_vertices: Vec<Vertex> = Vec::new();
         let mut combined_indices: Vec<u32> = Vec::new();
 
+        let mut chunk_count = 0u32;
         for z in -CHUNK_RADIUS..=CHUNK_RADIUS {
             for x in -CHUNK_RADIUS..=CHUNK_RADIUS {
                 let coord = world::ChunkCoord { x, y: 0, z };
-                let mesh = mesh::build_chunk_mesh(&world, coord);
+                let mesh = mesh::build_chunk_mesh(&world, coord, &atlas_layout);
                 let base_index = combined_vertices.len() as u32;
                 combined_vertices.extend(mesh.vertices.into_iter().map(|v| Vertex {
                     position: v.position,
                     color: v.color,
+                    uv: v.uv,
                 }));
                 combined_indices.extend(mesh.indices.into_iter().map(|i| i + base_index));
+                chunk_count += 1;
             }
         }
 
@@ -461,7 +508,10 @@ impl State {
             contents: bytemuck::cast_slice(&combined_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        let vertex_count = combined_vertices.len() as u32;
         let index_count = combined_indices.len() as u32;
+
+        let debug_overlay = text::DebugOverlay::new(&device, &queue, config.format);
 
         Self {
             window,
@@ -474,6 +524,10 @@ impl State {
             vertex_buffer,
             index_buffer,
             index_count,
+            vertex_count,
+            chunk_count,
+            atlas_bind_group,
+            _block_atlas: block_atlas,
             depth_texture,
             camera,
             projection,
@@ -481,8 +535,11 @@ impl State {
             camera_buffer,
             camera_bind_group,
             camera_controller: CameraController::new(6.0, 90.0),
+            debug_overlay,
+            fps_counter: FpsCounter::default(),
             _world: world,
             last_frame: Instant::now(),
+            last_frame_time: 0.0,
         }
     }
 
@@ -537,6 +594,26 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
+
+        let fps = self.fps_counter.update(dt_seconds);
+        self.last_frame_time = dt_seconds;
+        let pos = self.camera.position;
+        let debug_text = format!(
+            "FPS: {:>5.1}\nFrame: {:>6.2} ms\nTris: {:>7}\nVerts: {:>7}\nChunks: {:>4}\nPOS: {:+5.1} {:+5.1} {:+5.1}",
+            fps,
+            self.last_frame_time * 1000.0,
+            self.index_count / 3,
+            self.vertex_count,
+            self.chunk_count,
+            pos.x,
+            pos.y,
+            pos.z
+        );
+        let viewport = [self.size.width, self.size.height];
+        let device = &self.device;
+        let queue = &self.queue;
+        self.debug_overlay
+            .prepare(device, queue, viewport, &debug_text);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -577,15 +654,38 @@ impl State {
             });
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
 
+        self.debug_overlay.render(&mut encoder, &view);
+
         self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FpsCounter {
+    elapsed: f32,
+    frames: u32,
+    fps: f32,
+}
+
+impl FpsCounter {
+    fn update(&mut self, dt: f32) -> f32 {
+        self.elapsed += dt;
+        self.frames += 1;
+        if self.elapsed >= 0.5 {
+            self.fps = self.frames as f32 / self.elapsed.max(1e-6);
+            self.elapsed = 0.0;
+            self.frames = 0;
+        }
+        self.fps
     }
 }
 
