@@ -1,5 +1,6 @@
-use std::iter;
+use std::{iter, time::Instant};
 
+use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 use winit::{
     event::*,
@@ -17,6 +18,13 @@ struct State {
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
+    camera: Camera,
+    projection: Projection,
+    camera_uniform: CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    camera_controller: CameraController,
+    last_frame: Instant,
 }
 
 #[repr(C)]
@@ -61,6 +69,205 @@ const TRIANGLE_VERTICES: &[Vertex] = &[
         color: [0.0, 0.0, 1.0],
     },
 ];
+
+struct Camera {
+    position: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+
+impl Camera {
+    fn new(position: Vec3, yaw: f32, pitch: f32) -> Self {
+        Self {
+            position,
+            yaw,
+            pitch,
+        }
+    }
+
+    fn view_matrix(&self) -> Mat4 {
+        Mat4::look_to_rh(self.position, self.forward(), Vec3::Y)
+    }
+
+    fn forward(&self) -> Vec3 {
+        let yaw_radians = self.yaw.to_radians();
+        let pitch_radians = self.pitch.to_radians();
+        Vec3::new(
+            yaw_radians.cos() * pitch_radians.cos(),
+            pitch_radians.sin(),
+            yaw_radians.sin() * pitch_radians.cos(),
+        )
+        .normalize()
+    }
+}
+
+struct Projection {
+    fovy: f32,
+    aspect: f32,
+    znear: f32,
+    zfar: f32,
+}
+
+impl Projection {
+    fn new(width: u32, height: u32, fovy: f32, znear: f32, zfar: f32) -> Self {
+        let aspect = if height == 0 {
+            1.0
+        } else {
+            width as f32 / height as f32
+        };
+        Self {
+            fovy,
+            aspect,
+            znear,
+            zfar,
+        }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        if height != 0 {
+            self.aspect = width as f32 / height as f32;
+        }
+    }
+
+    fn matrix(&self) -> Mat4 {
+        Mat4::perspective_rh_gl(self.fovy.to_radians(), self.aspect, self.znear, self.zfar)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    fn new() -> Self {
+        Self {
+            view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+        }
+    }
+
+    fn update(&mut self, camera: &Camera, projection: &Projection) {
+        let view_proj = projection.matrix() * camera.view_matrix();
+        self.view_proj = view_proj.to_cols_array_2d();
+    }
+}
+
+struct CameraController {
+    speed: f32,
+    turn_speed: f32,
+    forward_pressed: bool,
+    backward_pressed: bool,
+    left_pressed: bool,
+    right_pressed: bool,
+    up_pressed: bool,
+    down_pressed: bool,
+    yaw_left_pressed: bool,
+    yaw_right_pressed: bool,
+    pitch_up_pressed: bool,
+    pitch_down_pressed: bool,
+}
+
+impl CameraController {
+    fn new(speed: f32, turn_speed: f32) -> Self {
+        Self {
+            speed,
+            turn_speed,
+            forward_pressed: false,
+            backward_pressed: false,
+            left_pressed: false,
+            right_pressed: false,
+            up_pressed: false,
+            down_pressed: false,
+            yaw_left_pressed: false,
+            yaw_right_pressed: false,
+            pitch_up_pressed: false,
+            pitch_down_pressed: false,
+        }
+    }
+
+    fn process_keyboard(&mut self, key: VirtualKeyCode, is_pressed: bool) -> bool {
+        match key {
+            VirtualKeyCode::W => {
+                self.forward_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::R => {
+                self.backward_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::A => {
+                self.left_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::S => {
+                self.right_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::LAlt => {
+                self.up_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::LShift => {
+                self.down_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::Left => {
+                self.yaw_left_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::Right => {
+                self.yaw_right_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::Up => {
+                self.pitch_up_pressed = is_pressed;
+                true
+            }
+            VirtualKeyCode::Down => {
+                self.pitch_down_pressed = is_pressed;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn update_camera(&self, camera: &mut Camera, dt: f32) {
+        let forward = camera.forward();
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+
+        let mut move_dir = Vec3::ZERO;
+        if self.forward_pressed {
+            move_dir += forward;
+        }
+        if self.backward_pressed {
+            move_dir -= forward;
+        }
+        if self.left_pressed {
+            move_dir -= right;
+        }
+        if self.right_pressed {
+            move_dir += right;
+        }
+        if self.up_pressed {
+            move_dir += Vec3::Y;
+        }
+        if self.down_pressed {
+            move_dir -= Vec3::Y;
+        }
+
+        if move_dir.length_squared() > 0.0 {
+            camera.position += move_dir.normalize() * self.speed * dt;
+        }
+
+        let yaw_delta = (self.yaw_right_pressed as i32 - self.yaw_left_pressed as i32) as f32;
+        let pitch_delta = (self.pitch_up_pressed as i32 - self.pitch_down_pressed as i32) as f32;
+
+        camera.yaw += yaw_delta * self.turn_speed * dt;
+        camera.pitch =
+            (camera.pitch + pitch_delta * self.turn_speed * dt).clamp(-89.0_f32, 89.0_f32);
+    }
+}
 
 impl State {
     async fn new(window: Window) -> Self {
@@ -119,6 +326,41 @@ impl State {
 
         surface.configure(&device, &config);
 
+        let camera = Camera::new(Vec3::new(0.0, 1.5, 4.0), -90.0, 0.0);
+        let projection = Projection::new(config.width, config.height, 60.0, 0.1, 100.0);
+        let mut camera_uniform = CameraUniform::new();
+        camera_uniform.update(&camera, &projection);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Camera bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Camera bind group"),
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Triangle shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -126,7 +368,7 @@ impl State {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Triangle pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&camera_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -170,6 +412,13 @@ impl State {
             render_pipeline,
             vertex_buffer,
             vertex_count,
+            camera,
+            projection,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            camera_controller: CameraController::new(6.0, 90.0),
+            last_frame: Instant::now(),
         }
     }
 
@@ -186,13 +435,44 @@ impl State {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+        self.projection.resize(new_size.width, new_size.height);
+        self.camera_uniform.update(&self.camera, &self.projection);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
     }
 
-    fn input(&mut self, _event: &WindowEvent) -> bool {
-        false
+    fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { input, .. } => {
+                if let Some(keycode) = input.virtual_keycode {
+                    let is_pressed = input.state == ElementState::Pressed;
+                    self.camera_controller.process_keyboard(keycode, is_pressed)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        let now = Instant::now();
+        let dt = now - self.last_frame;
+        self.last_frame = now;
+        let dt_seconds = dt.as_secs_f32();
+
+        self.camera_controller
+            .update_camera(&mut self.camera, dt_seconds);
+        self.camera_uniform.update(&self.camera, &self.projection);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -224,6 +504,7 @@ impl State {
                 depth_stencil_attachment: None,
             });
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.vertex_count, 0..1);
         }
