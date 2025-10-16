@@ -4,8 +4,10 @@ use bytemuck::{Pod, Zeroable};
 use glam::IVec3;
 use wgpu::util::DeviceExt;
 
+use crate::block::{self, BLOCK_AIR, BlockId};
 use crate::render::{FrameContext, Renderer, RendererKind};
-use crate::world::{BLOCK_AIR, BlockId, CHUNK_SIZE, World, chunk_min_corner};
+use crate::texture::{AtlasLayout, TextureAtlas, TileId};
+use crate::world::{CHUNK_SIZE, World, chunk_min_corner};
 
 pub struct RayTraceRenderer {
     blit_pipeline: wgpu::RenderPipeline,
@@ -19,6 +21,10 @@ pub struct RayTraceRenderer {
     compute_bind_group: Option<wgpu::BindGroup>,
     uniform_buffer: wgpu::Buffer,
     voxel_buffer: Option<wgpu::Buffer>,
+    block_info_buffer: wgpu::Buffer,
+    atlas_view: wgpu::TextureView,
+    atlas_sampler: wgpu::Sampler,
+    atlas_layout: AtlasLayout,
     screen: Option<ScreenTexture>,
     scene: Option<VoxelScene>,
     surface_format: wgpu::TextureFormat,
@@ -26,7 +32,11 @@ pub struct RayTraceRenderer {
 }
 
 impl RayTraceRenderer {
-    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        atlas: &TextureAtlas,
+    ) -> Self {
         let blit_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Ray traced blit bind group layout"),
@@ -102,6 +112,32 @@ impl RayTraceRenderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
 
@@ -113,6 +149,26 @@ impl RayTraceRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        let block_info_data = build_block_metadata();
+        let block_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Block metadata buffer"),
+            contents: bytemuck::cast_slice(&block_info_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let atlas_view = atlas.create_view();
+        let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Ray traced atlas sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let atlas_layout = atlas.layout();
 
         Self {
             blit_pipeline,
@@ -126,6 +182,10 @@ impl RayTraceRenderer {
             compute_bind_group: None,
             uniform_buffer,
             voxel_buffer: None,
+            block_info_buffer,
+            atlas_view,
+            atlas_sampler,
+            atlas_layout,
             screen: None,
             scene: None,
             surface_format,
@@ -248,6 +308,18 @@ impl RayTraceRenderer {
                     binding: 2,
                     resource: voxel.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.block_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                },
             ],
         });
 
@@ -276,6 +348,12 @@ impl RayTraceRenderer {
                 grid.stride_z as u32,
                 ctx.surface_config.width,
                 ctx.surface_config.height,
+            ],
+            atlas: [
+                self.atlas_layout.tile_size,
+                self.atlas_layout.width,
+                self.atlas_layout.height,
+                0,
             ],
         };
 
@@ -454,12 +532,46 @@ impl VoxelGrid {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuBlockInfo {
+    face_tiles: [u32; 6],
+    luminance: f32,
+    reflectivity: f32,
+    _padding: [f32; 2],
+}
+
+fn build_block_metadata() -> Vec<GpuBlockInfo> {
+    let mut entries = Vec::with_capacity(u8::MAX as usize + 1);
+    for id in 0..=u8::MAX {
+        let definition = block::block_definition(id);
+        let mut face_tiles = [0u32; 6];
+        for (idx, tile) in definition.face_tiles.iter().enumerate() {
+            face_tiles[idx] = encode_tile_id(*tile);
+        }
+        entries.push(GpuBlockInfo {
+            face_tiles,
+            luminance: definition.luminance,
+            reflectivity: definition.reflectivity,
+            _padding: [0.0, 0.0],
+        });
+    }
+    entries
+}
+
+fn encode_tile_id(tile: TileId) -> u32 {
+    let x = tile.x & 0xFFFF;
+    let y = tile.y & 0xFFFF;
+    x | (y << 16)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
 struct RayUniforms {
     inv_view_proj: [[f32; 4]; 4],
     eye: [f32; 4],
     grid_origin: [i32; 4],
     grid_size: [u32; 4],
     stride: [u32; 4],
+    atlas: [u32; 4],
 }
 
 fn create_fullscreen_quad(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {

@@ -1,5 +1,6 @@
+use crate::block::{BlockId, BlockKind, FaceDirection};
 use crate::texture::AtlasLayout;
-use crate::world::{BlockId, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World};
+use crate::world::{CHUNK_SIZE, ChunkCoord, World};
 
 #[derive(Clone, Copy)]
 pub struct MeshVertex {
@@ -52,14 +53,7 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -
                         world: world_position,
                         origin: block_origin,
                     };
-                    add_block_faces(
-                        world,
-                        atlas,
-                        kind,
-                        block,
-                        &mut vertices,
-                        &mut indices,
-                    );
+                    add_block_faces(world, atlas, kind, block, &mut vertices, &mut indices);
                 }
             }
         }

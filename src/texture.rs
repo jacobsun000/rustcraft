@@ -156,6 +156,11 @@ impl TextureAtlas {
         self.layout
     }
 
+    pub fn create_view(&self) -> wgpu::TextureView {
+        self._texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
     pub fn create_bind_group(
         &self,
         device: &wgpu::Device,

@@ -151,7 +151,7 @@ impl AppState {
                 &camera_bind_group_layout,
             )),
             RenderMethodSetting::RayTraced => {
-                Box::new(RayTraceRenderer::new(&device, surface_format))
+                Box::new(RayTraceRenderer::new(&device, surface_format, &block_atlas))
             }
         };
 

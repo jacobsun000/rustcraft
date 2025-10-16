@@ -2,76 +2,10 @@ use std::{collections::HashMap, f32::consts::PI};
 
 use glam::IVec3;
 
-use crate::texture::TileId;
+use crate::block::{BLOCK_AIR, BlockId, BlockKind};
 
 pub const CHUNK_SIZE: usize = 16;
 const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
-
-pub type BlockId = u8;
-
-pub const BLOCK_AIR: BlockId = 0;
-pub const BLOCK_GRASS: BlockId = 1;
-pub const BLOCK_DIRT: BlockId = 2;
-pub const BLOCK_STONE: BlockId = 3;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BlockKind {
-    Air,
-    Grass,
-    Dirt,
-    Stone,
-}
-
-impl BlockKind {
-    pub fn id(self) -> BlockId {
-        match self {
-            BlockKind::Air => BLOCK_AIR,
-            BlockKind::Grass => BLOCK_GRASS,
-            BlockKind::Dirt => BLOCK_DIRT,
-            BlockKind::Stone => BLOCK_STONE,
-        }
-    }
-
-    pub fn from_id(id: BlockId) -> Self {
-        match id {
-            BLOCK_GRASS => BlockKind::Grass,
-            BLOCK_DIRT => BlockKind::Dirt,
-            BLOCK_STONE => BlockKind::Stone,
-            _ => BlockKind::Air,
-        }
-    }
-
-    pub fn is_solid(self) -> bool {
-        !matches!(self, BlockKind::Air)
-    }
-
-    pub fn tile_for_face(self, face: FaceDirection) -> TileId {
-        match self {
-            BlockKind::Grass => match face {
-                FaceDirection::PosY => TILE_GRASS_TOP,
-                FaceDirection::NegY => TILE_DIRT,
-                _ => TILE_GRASS_SIDE,
-            },
-            BlockKind::Dirt => TILE_DIRT,
-            BlockKind::Stone => TILE_STONE,
-            BlockKind::Air => TILE_AIR,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn diffuse_color(self, face: FaceDirection) -> [f32; 3] {
-        match self {
-            BlockKind::Grass => match face {
-                FaceDirection::PosY => [0.58, 0.78, 0.32],
-                FaceDirection::NegY => [0.38, 0.25, 0.14],
-                _ => [0.32, 0.56, 0.24],
-            },
-            BlockKind::Dirt => [0.42, 0.27, 0.16],
-            BlockKind::Stone => [0.55, 0.55, 0.58],
-            BlockKind::Air => [0.0, 0.0, 0.0],
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkCoord {
@@ -156,16 +90,6 @@ impl World {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum FaceDirection {
-    NegX,
-    PosX,
-    NegY,
-    PosY,
-    NegZ,
-    PosZ,
-}
-
 pub fn chunk_origin(coord: ChunkCoord) -> [f32; 3] {
     let half = CHUNK_SIZE as f32 / 2.0;
     [
@@ -182,12 +106,6 @@ pub fn chunk_min_corner(coord: ChunkCoord) -> IVec3 {
         coord.z * CHUNK_SIZE as i32,
     )
 }
-
-const TILE_GRASS_TOP: TileId = TileId { x: 0, y: 0 };
-const TILE_GRASS_SIDE: TileId = TileId { x: 1, y: 0 };
-const TILE_DIRT: TileId = TileId { x: 2, y: 0 };
-const TILE_STONE: TileId = TileId { x: 3, y: 0 };
-const TILE_AIR: TileId = TileId { x: 0, y: 0 };
 
 fn generate_chunk(coord: ChunkCoord) -> Chunk {
     let mut chunk = Chunk::new();
@@ -214,6 +132,18 @@ fn generate_chunk(coord: ChunkCoord) -> Chunk {
                     chunk.set(x, y, z, kind.id());
                 }
             }
+        }
+    }
+
+    if coord == (ChunkCoord { x: 0, y: 0, z: 0 }) {
+        let lamp_x = CHUNK_SIZE / 2;
+        let lamp_z = CHUNK_SIZE / 2;
+        let world_x = base_x + lamp_x as i32;
+        let world_z = base_z + lamp_z as i32;
+        let lamp_world_y = terrain_height(world_x, world_z) + 1;
+        if lamp_world_y >= base_y && lamp_world_y < base_y + CHUNK_SIZE as i32 {
+            let lamp_y = (lamp_world_y - base_y) as usize;
+            chunk.set(lamp_x, lamp_y, lamp_z, BlockKind::Lamp.id());
         }
     }
 

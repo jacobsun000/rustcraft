@@ -4,6 +4,7 @@ struct RayUniforms {
     grid_origin: vec4<i32>,
     grid_size: vec4<u32>,
     stride: vec4<u32>,
+    atlas: vec4<u32>,
 };
 
 @group(0) @binding(0)
@@ -15,29 +16,88 @@ var<uniform> uniforms: RayUniforms;
 @group(0) @binding(2)
 var<storage, read> voxels: array<u32>;
 
+struct BlockInfo {
+    face_tiles: array<u32, 6>,
+    luminance: f32,
+    reflectivity: f32,
+    _padding: vec2<f32>,
+};
+
+@group(0) @binding(3)
+var<storage, read> block_data: array<BlockInfo>;
+
+@group(0) @binding(4)
+var block_atlas: texture_2d<f32>;
+
+@group(0) @binding(5)
+var atlas_sampler: sampler;
+
 const SUN_DIRECTION: vec3<f32> = vec3<f32>(0.3, 0.9, 0.5);
 
 fn lerp_vec3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a + t * (b - a);
 }
 
-fn block_color(block: u32, face: vec3<f32>) -> vec3<f32> {
-    if block == 1u {
-        if face.y > 0.5 {
-            return vec3<f32>(0.58, 0.78, 0.32);
-        }
-        if face.y < -0.5 {
-            return vec3<f32>(0.38, 0.25, 0.14);
-        }
-        return vec3<f32>(0.32, 0.56, 0.24);
+fn decode_tile(tile: u32) -> vec2<u32> {
+    let x = tile & 0xFFFFu;
+    let y = tile >> 16u;
+    return vec2<u32>(x, y);
+}
+
+fn atlas_coords(tile: u32, uv: vec2<f32>) -> vec2<f32> {
+    let coords = decode_tile(tile);
+    let tile_size = f32(uniforms.atlas.x);
+    let atlas_width = f32(uniforms.atlas.y);
+    let atlas_height = f32(uniforms.atlas.z);
+    let pixel = vec2<f32>(
+        f32(coords.x) * tile_size + uv.x * (tile_size - 1.0) + 0.5,
+        f32(coords.y) * tile_size + uv.y * (tile_size - 1.0) + 0.5,
+    );
+    return vec2<f32>(pixel.x / atlas_width, pixel.y / atlas_height);
+}
+
+fn sample_tile(tile: u32, uv: vec2<f32>) -> vec3<f32> {
+    let coords = atlas_coords(tile, uv);
+    return textureSampleLevel(block_atlas, atlas_sampler, coords, 0.0).rgb;
+}
+
+fn face_index(normal: vec3<f32>) -> u32 {
+    if normal.x < -0.5 {
+        return 0u;
     }
-    if block == 2u {
-        return vec3<f32>(0.42, 0.27, 0.16);
+    if normal.x > 0.5 {
+        return 1u;
     }
-    if block == 3u {
-        return vec3<f32>(0.55, 0.55, 0.58);
+    if normal.y < -0.5 {
+        return 2u;
     }
-    return vec3<f32>(0.7, 0.7, 0.7);
+    if normal.y > 0.5 {
+        return 3u;
+    }
+    if normal.z < -0.5 {
+        return 4u;
+    }
+    return 5u;
+}
+
+fn face_uv(normal: vec3<f32>, local: vec3<f32>) -> vec2<f32> {
+    let clamped = clamp(local, vec3<f32>(0.0), vec3<f32>(0.999));
+    if normal.x > 0.5 {
+        return vec2<f32>(clamped.z, clamped.y);
+    }
+    if normal.x < -0.5 {
+        return vec2<f32>(1.0 - clamped.z, clamped.y);
+    }
+    if normal.y > 0.5 {
+        return vec2<f32>(clamped.x, clamped.z);
+    }
+    if normal.y < -0.5 {
+        return vec2<f32>(clamped.x, 1.0 - clamped.z);
+    }
+    if normal.z > 0.5 {
+        return vec2<f32>(clamped.x, clamped.y);
+    }
+    return vec2<f32>(clamped.x, clamped.y);
 }
 
 fn voxel_count() -> u32 {
@@ -168,16 +228,6 @@ fn determine_entry_normal(pos: vec3<f32>, min: vec3<f32>, max: vec3<f32>, dir: v
     return vec3<f32>(0.0, 0.0, -sign(dir.z));
 }
 
-fn shade(block: u32, normal: vec3<f32>, travel: f32) -> vec3<f32> {
-    let base = block_color(block, normal);
-    let sun = normalize(SUN_DIRECTION);
-    let light = max(dot(normal, sun), 0.0);
-    let diffuse = 0.25 + 0.75 * light;
-    let fog_color = vec3<f32>(0.6, 0.75, 0.95);
-    let fog = clamp(travel / 400.0, 0.0, 1.0);
-    return lerp_vec3(base * diffuse, fog_color, fog * 0.6);
-}
-
 fn compute_t_max(origin: f32, direction: f32, voxel: i32, step: i32) -> f32 {
     if step == 0 {
         return 1e30;
@@ -203,50 +253,62 @@ fn sky(dir: vec3<f32>) -> vec3<f32> {
     return lerp_vec3(horizon, zenith, t);
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let resolution = uniforms.stride.zw;
-    if gid.x >= resolution.x || gid.y >= resolution.y {
-        return;
-    }
+struct HitResult {
+    block: u32,
+    voxel: vec3<i32>,
+    normal: vec3<f32>,
+    travel: f32,
+}
 
-    let res = vec2<f32>(f32(resolution.x), f32(resolution.y));
-    let pixel = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
-    let ndc = vec2<f32>(
-        pixel.x / res.x * 2.0 - 1.0,
-        1.0 - pixel.y / res.y * 2.0,
-    );
+struct SurfaceSample {
+    color: vec3<f32>,
+    fog_color: vec3<f32>,
+    fog: f32,
+    reflectivity: f32,
+    reflection_origin: vec3<f32>,
+    reflection_dir: vec3<f32>,
+    has_reflection: bool,
+}
 
-    let clip = vec4<f32>(ndc, 1.0, 1.0);
-    let world = uniforms.inv_view_proj * clip;
-    let world_pos = world.xyz / world.w;
-    let origin = uniforms.eye.xyz;
-    var dir = normalize(world_pos - origin);
+fn miss_hit() -> HitResult {
+    return HitResult(0u, vec3<i32>(0, 0, 0), vec3<f32>(0.0, 0.0, 0.0), 0.0);
+}
 
+fn trace_ray(origin: vec3<f32>, dir: vec3<f32>) -> HitResult {
     let grid_origin_i = uniforms.grid_origin.xyz;
-    let grid_min = vec3<f32>(f32(grid_origin_i.x), f32(grid_origin_i.y), f32(grid_origin_i.z));
+    let grid_min = vec3<f32>(
+        f32(grid_origin_i.x),
+        f32(grid_origin_i.y),
+        f32(grid_origin_i.z),
+    );
     let grid_size_u = uniforms.grid_size.xyz;
-    let grid_extent = vec3<f32>(f32(grid_size_u.x), f32(grid_size_u.y), f32(grid_size_u.z));
+    let grid_extent = vec3<f32>(
+        f32(grid_size_u.x),
+        f32(grid_size_u.y),
+        f32(grid_size_u.z),
+    );
     let grid_max = grid_min + grid_extent;
 
-    let interval = intersect_aabb(origin, dir, grid_min, grid_max);
-    if interval.x > interval.y {
-        textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(sky(dir), 1.0));
-        return;
+    let bounds = intersect_aabb(origin, dir, grid_min, grid_max);
+    if bounds.x > bounds.y {
+        return miss_hit();
     }
 
-    var entry = max(interval.x, 0.0);
-    var exit = interval.y;
+    var entry = max(bounds.x, 0.0);
+    let exit = bounds.y;
     if exit <= entry {
-        textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(sky(dir), 1.0));
-        return;
+        return miss_hit();
     }
 
     let start = origin + dir * (entry + 1e-3);
     let start_floor = floor(start);
-    var voxel = vec3<i32>(i32(start_floor.x), i32(start_floor.y), i32(start_floor.z));
+    var voxel = vec3<i32>(
+        i32(start_floor.x),
+        i32(start_floor.y),
+        i32(start_floor.z),
+    );
 
-    var step_vec = vec3<i32>(0);
+    var step_vec = vec3<i32>(0, 0, 0);
     if dir.x > 0.0 {
         step_vec.x = 1;
     } else if dir.x < 0.0 {
@@ -277,9 +339,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var normal = determine_entry_normal(start, grid_min, grid_max, dir);
     var block = sample_block(voxel);
     if block != 0u {
-        let color = shade(block, normal, entry);
-        textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(color, 1.0));
-        return;
+        return HitResult(block, voxel, normal, entry);
     }
 
     var travel = entry;
@@ -329,13 +389,124 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         block = sample_block(voxel);
         if block != 0u {
-            let color = shade(block, normal, travel);
-            textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(color, 1.0));
-            return;
+            return HitResult(block, voxel, normal, travel);
         }
 
         steps = steps + 1u;
     }
 
-    textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(sky(dir), 1.0));
+    return miss_hit();
+}
+
+fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> SurfaceSample {
+    let info = block_data[hit.block];
+    let hit_point = origin + dir * (hit.travel + 1e-4);
+    let block_origin = vec3<f32>(
+        f32(hit.voxel.x),
+        f32(hit.voxel.y),
+        f32(hit.voxel.z),
+    );
+    let local = hit_point - block_origin;
+    let face = face_index(hit.normal);
+    var tile = info.face_tiles[0u];
+    switch face {
+        case 0u: {
+            tile = info.face_tiles[0u];
+        }
+        case 1u: {
+            tile = info.face_tiles[1u];
+        }
+        case 2u: {
+            tile = info.face_tiles[2u];
+        }
+        case 3u: {
+            tile = info.face_tiles[3u];
+        }
+        case 4u: {
+            tile = info.face_tiles[4u];
+        }
+        default: {
+            tile = info.face_tiles[5u];
+        }
+    }
+    let uv = face_uv(hit.normal, local);
+    let albedo = sample_tile(tile, uv);
+
+    let sun = normalize(SUN_DIRECTION);
+    let light = max(dot(hit.normal, sun), 0.0);
+    let diffuse = 0.25 + 0.75 * light;
+    let emission = info.luminance;
+    let brightness = diffuse + emission * 0.08;
+    let surface = albedo * brightness;
+    let glow = albedo * emission * 0.12;
+    let fog_color = vec3<f32>(0.6, 0.75, 0.95);
+    let fog = clamp(hit.travel / 400.0, 0.0, 1.0) * 0.6;
+
+    let reflectivity = clamp(info.reflectivity, 0.0, 1.0);
+    var reflection_origin = vec3<f32>(0.0, 0.0, 0.0);
+    var reflection_dir = vec3<f32>(0.0, 0.0, 0.0);
+    var has_reflection = false;
+    if reflectivity > 0.001 {
+        var candidate = reflect(dir, hit.normal);
+        let dir_len = length(candidate);
+        if dir_len > 1e-5 {
+            reflection_dir = candidate / dir_len;
+            reflection_origin = hit_point + hit.normal * 1e-3;
+            has_reflection = true;
+        }
+    }
+
+    return SurfaceSample(
+        surface + glow,
+        fog_color,
+        fog,
+        reflectivity,
+        reflection_origin,
+        reflection_dir,
+        has_reflection,
+    );
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let resolution = uniforms.stride.zw;
+    if gid.x >= resolution.x || gid.y >= resolution.y {
+        return;
+    }
+
+    let res = vec2<f32>(f32(resolution.x), f32(resolution.y));
+    let pixel = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
+    let ndc = vec2<f32>(
+        pixel.x / res.x * 2.0 - 1.0,
+        1.0 - pixel.y / res.y * 2.0,
+    );
+
+    let clip = vec4<f32>(ndc, 1.0, 1.0);
+    let world = uniforms.inv_view_proj * clip;
+    let world_pos = world.xyz / world.w;
+    let origin = uniforms.eye.xyz;
+    let dir = normalize(world_pos - origin);
+
+    let hit = trace_ray(origin, dir);
+    var color = sky(dir);
+    if hit.block != 0u {
+        let sample = evaluate_surface(hit, origin, dir);
+        var shaded = sample.color;
+
+        if sample.reflectivity > 0.001 && sample.has_reflection {
+            var reflection_color = sky(sample.reflection_dir);
+            let reflection_hit = trace_ray(sample.reflection_origin, sample.reflection_dir);
+            if reflection_hit.block != 0u {
+                let reflection_sample =
+                    evaluate_surface(reflection_hit, sample.reflection_origin, sample.reflection_dir);
+                reflection_color =
+                    lerp_vec3(reflection_sample.color, reflection_sample.fog_color, reflection_sample.fog);
+            }
+            shaded = shaded * (1.0 - sample.reflectivity) + reflection_color * sample.reflectivity;
+        }
+
+        color = lerp_vec3(shaded, sample.fog_color, sample.fog);
+    }
+
+    textureStore(target_image, vec2<i32>(gid.xy), vec4<f32>(color, 1.0));
 }

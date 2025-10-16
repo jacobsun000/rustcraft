@@ -1,4 +1,5 @@
 mod app;
+mod block;
 mod camera;
 mod config;
 mod fps;
