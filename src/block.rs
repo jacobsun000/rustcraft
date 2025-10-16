@@ -29,7 +29,9 @@ impl FaceDirection {
 pub struct BlockDefinition {
     pub solid: bool,
     pub luminance: f32,
-    pub reflectivity: f32,
+    pub specular: f32,
+    pub diffuse: f32,
+    pub roughness: f32,
     pub face_tiles: [TileId; 6],
 }
 
@@ -90,20 +92,26 @@ const TILE_GRASS_TOP: TileId = TileId { x: 0, y: 0 };
 const TILE_GRASS_SIDE: TileId = TileId { x: 1, y: 0 };
 const TILE_DIRT: TileId = TileId { x: 2, y: 0 };
 const TILE_STONE: TileId = TileId { x: 3, y: 0 };
-const TILE_LAMP: TileId = TileId { x: 3, y: 0 };
+const TILE_LAMP: TileId = TileId { x: 4, y: 0 };
 const TILE_AIR: TileId = TileId { x: 0, y: 0 };
 
 const BLOCK_DEFINITIONS: [BlockDefinition; 5] = [
     BlockDefinition {
+        // Air
         solid: false,
         luminance: 0.0,
-        reflectivity: 0.0,
+        specular: 0.0,
+        diffuse: 0.0,
+        roughness: 0.0,
         face_tiles: [TILE_AIR; 6],
     },
     BlockDefinition {
+        // Grass
         solid: true,
         luminance: 0.0,
-        reflectivity: 0.05,
+        specular: 0.04,
+        diffuse: 0.85,
+        roughness: 0.7,
         face_tiles: [
             TILE_GRASS_SIDE,
             TILE_GRASS_SIDE,
@@ -114,21 +122,30 @@ const BLOCK_DEFINITIONS: [BlockDefinition; 5] = [
         ],
     },
     BlockDefinition {
+        // Dirt
         solid: true,
         luminance: 0.0,
-        reflectivity: 0.02,
+        specular: 0.025,
+        diffuse: 0.75,
+        roughness: 0.85,
         face_tiles: [TILE_DIRT; 6],
     },
     BlockDefinition {
+        // Stone
         solid: true,
         luminance: 0.0,
-        reflectivity: 0.2,
+        specular: 0.12,
+        diffuse: 0.6,
+        roughness: 0.45,
         face_tiles: [TILE_STONE; 6],
     },
     BlockDefinition {
+        // Lamp
         solid: true,
         luminance: 8.0,
-        reflectivity: 0.0,
+        specular: 0.08,
+        diffuse: 0.9,
+        roughness: 0.6,
         face_tiles: [TILE_LAMP; 6],
     },
 ];

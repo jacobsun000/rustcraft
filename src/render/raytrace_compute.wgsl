@@ -19,8 +19,9 @@ var<storage, read> voxels: array<u32>;
 struct BlockInfo {
     face_tiles: array<u32, 6>,
     luminance: f32,
-    reflectivity: f32,
-    _padding: vec2<f32>,
+    specular: f32,
+    diffuse: f32,
+    roughness: f32,
 };
 
 @group(0) @binding(3)
@@ -33,9 +34,16 @@ var block_atlas: texture_2d<f32>;
 var atlas_sampler: sampler;
 
 const SUN_DIRECTION: vec3<f32> = vec3<f32>(0.3, 0.9, 0.5);
+const PI: f32 = 3.14159265359;
+const MAX_SPECULAR_BOUNCES: u32 = 2u;
+const DIFFUSE_SAMPLE_WEIGHT: f32 = 0.6;
 
 fn lerp_vec3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a + t * (b - a);
+}
+
+fn saturate(x: f32) -> f32 {
+    return clamp(x, 0.0, 1.0);
 }
 
 fn decode_tile(tile: u32) -> vec2<u32> {
@@ -59,6 +67,51 @@ fn atlas_coords(tile: u32, uv: vec2<f32>) -> vec2<f32> {
 fn sample_tile(tile: u32, uv: vec2<f32>) -> vec3<f32> {
     let coords = atlas_coords(tile, uv);
     return textureSampleLevel(block_atlas, atlas_sampler, coords, 0.0).rgb;
+}
+
+fn schlick(f0: f32, cos_theta: f32) -> f32 {
+    let base = saturate(1.0 - cos_theta);
+    let factor = base * base * base * base * base;
+    return f0 + (1.0 - f0) * factor;
+}
+
+fn hash_noise(seed: vec3<f32>) -> f32 {
+    let dot_seed = dot(seed, vec3<f32>(12.9898, 78.233, 45.164));
+    return fract(sin(dot_seed) * 43758.5453);
+}
+
+fn random_scalar(seed: vec3<f32>, offset: f32) -> f32 {
+    return hash_noise(seed + vec3<f32>(offset, offset * 1.31, offset * 2.17));
+}
+
+fn random_vec2(seed: vec3<f32>, offset: f32) -> vec2<f32> {
+    return vec2<f32>(
+        random_scalar(seed, offset),
+        random_scalar(seed, offset + 19.37),
+    );
+}
+
+fn orthonormal_basis(normal: vec3<f32>) -> mat3x3<f32> {
+    let up = select(
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(1.0, 0.0, 0.0),
+        abs(normal.y) > 0.99,
+    );
+    let tangent = normalize(cross(up, normal));
+    let bitangent = cross(normal, tangent);
+    return mat3x3<f32>(tangent, bitangent, normal);
+}
+
+fn sample_cosine_hemisphere(normal: vec3<f32>, xi: vec2<f32>) -> vec3<f32> {
+    let phi = 2.0 * PI * xi.x;
+    let r = sqrt(xi.y);
+    let local = vec3<f32>(
+        r * cos(phi),
+        r * sin(phi),
+        sqrt(max(0.0, 1.0 - xi.y)),
+    );
+    let basis = orthonormal_basis(normal);
+    return normalize(basis * local);
 }
 
 fn face_index(normal: vec3<f32>) -> u32 {
@@ -98,6 +151,31 @@ fn face_uv(normal: vec3<f32>, local: vec3<f32>) -> vec2<f32> {
         return vec2<f32>(clamped.x, clamped.y);
     }
     return vec2<f32>(clamped.x, clamped.y);
+}
+
+fn tile_for_face(info: BlockInfo, face: u32) -> u32 {
+    var tile = info.face_tiles[0u];
+    switch face {
+        case 0u: {
+            tile = info.face_tiles[0u];
+        }
+        case 1u: {
+            tile = info.face_tiles[1u];
+        }
+        case 2u: {
+            tile = info.face_tiles[2u];
+        }
+        case 3u: {
+            tile = info.face_tiles[3u];
+        }
+        case 4u: {
+            tile = info.face_tiles[4u];
+        }
+        default: {
+            tile = info.face_tiles[5u];
+        }
+    }
+    return tile;
 }
 
 fn voxel_count() -> u32 {
@@ -261,13 +339,21 @@ struct HitResult {
 }
 
 struct SurfaceSample {
-    color: vec3<f32>,
+    direct: vec3<f32>,
+    specular: vec3<f32>,
+    diffuse: vec3<f32>,
     fog_color: vec3<f32>,
     fog: f32,
-    reflectivity: f32,
-    reflection_origin: vec3<f32>,
-    reflection_dir: vec3<f32>,
-    has_reflection: bool,
+}
+
+struct MaterialInfo {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    direct: vec3<f32>,
+    specular: f32,
+    diffuse: f32,
+    roughness: f32,
 }
 
 fn miss_hit() -> HitResult {
@@ -398,7 +484,7 @@ fn trace_ray(origin: vec3<f32>, dir: vec3<f32>) -> HitResult {
     return miss_hit();
 }
 
-fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> SurfaceSample {
+fn gather_material(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> MaterialInfo {
     let info = block_data[hit.block];
     let hit_point = origin + dir * (hit.travel + 1e-4);
     let block_origin = vec3<f32>(
@@ -408,63 +494,103 @@ fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> Surfac
     );
     let local = hit_point - block_origin;
     let face = face_index(hit.normal);
-    var tile = info.face_tiles[0u];
-    switch face {
-        case 0u: {
-            tile = info.face_tiles[0u];
-        }
-        case 1u: {
-            tile = info.face_tiles[1u];
-        }
-        case 2u: {
-            tile = info.face_tiles[2u];
-        }
-        case 3u: {
-            tile = info.face_tiles[3u];
-        }
-        case 4u: {
-            tile = info.face_tiles[4u];
-        }
-        default: {
-            tile = info.face_tiles[5u];
-        }
-    }
+    let tile = tile_for_face(info, face);
     let uv = face_uv(hit.normal, local);
     let albedo = sample_tile(tile, uv);
 
     let sun = normalize(SUN_DIRECTION);
     let light = max(dot(hit.normal, sun), 0.0);
-    let diffuse = 0.25 + 0.75 * light;
-    let emission = info.luminance;
-    let brightness = diffuse + emission * 0.08;
-    let surface = albedo * brightness;
-    let glow = albedo * emission * 0.12;
+    let diffuse_component = albedo * light * saturate(info.diffuse);
+    let emission = albedo * info.luminance * 0.12;
+    let direct = diffuse_component + emission;
+    let specular = saturate(info.specular);
+    let diffuse_strength = saturate(info.diffuse);
+    let roughness = clamp(info.roughness, 0.02, 1.0);
+
+    return MaterialInfo(
+        hit_point,
+        hit.normal,
+        albedo,
+        direct,
+        specular,
+        diffuse_strength,
+        roughness,
+    );
+}
+
+fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<f32>) -> vec3<f32> {
+    let cos_theta = saturate(dot(material.normal, -incoming));
+    let base_reflect = schlick(material.specular, cos_theta);
+    if base_reflect < 0.005 {
+        return vec3<f32>(0.0);
+    }
+
+    var color = vec3<f32>(0.0);
+    var throughput = vec3<f32>(base_reflect);
+    var ray_origin = material.position + material.normal * 1e-3;
+    let jitter_seed = random_vec2(seed, 1.0);
+    let jitter = sample_cosine_hemisphere(material.normal, jitter_seed);
+    var ray_dir = normalize(mix(reflect(incoming, material.normal), jitter, material.roughness));
+
+    for (var bounce = 0u; bounce < MAX_SPECULAR_BOUNCES; bounce = bounce + 1u) {
+        let hit = trace_ray(ray_origin, ray_dir);
+        if hit.block == 0u {
+            color += throughput * sky(ray_dir);
+            break;
+        }
+
+        let sample_material = gather_material(hit, ray_origin, ray_dir);
+        color += throughput * sample_material.direct;
+
+        let next_cos = saturate(dot(sample_material.normal, -ray_dir));
+        let fresnel = schlick(sample_material.specular, next_cos);
+        let attenuation =
+            mix(vec3<f32>(1.0), sample_material.albedo, 0.12) * fresnel * (1.0 - sample_material.roughness * 0.35);
+
+        throughput *= attenuation;
+        if max(max(throughput.x, throughput.y), throughput.z) < 0.01 {
+            break;
+        }
+
+        let xi = random_vec2(seed, f32(bounce) * 23.0 + 2.5);
+        let jitter_dir = sample_cosine_hemisphere(sample_material.normal, xi);
+        ray_origin = sample_material.position + sample_material.normal * 1e-3;
+        ray_dir =
+            normalize(mix(reflect(ray_dir, sample_material.normal), jitter_dir, sample_material.roughness));
+    }
+
+    return color;
+}
+
+fn trace_diffuse_component(material: MaterialInfo, seed: vec3<f32>) -> vec3<f32> {
+    if material.diffuse < 0.01 {
+        return vec3<f32>(0.0);
+    }
+
+    let xi = random_vec2(seed, 11.0);
+    let bounce_dir = sample_cosine_hemisphere(material.normal, xi);
+    let bounce_origin = material.position + material.normal * 1e-3;
+    let hit = trace_ray(bounce_origin, bounce_dir);
+
+    var indirect = material.albedo * material.diffuse * 0.1;
+    if hit.block == 0u {
+        indirect += material.albedo * material.diffuse * 0.25 * sky(bounce_dir);
+    } else {
+        let bounced = gather_material(hit, bounce_origin, bounce_dir);
+        indirect += bounced.direct * material.diffuse * DIFFUSE_SAMPLE_WEIGHT;
+    }
+
+    return indirect;
+}
+
+fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec3<f32>) -> SurfaceSample {
+    let material = gather_material(hit, origin, dir);
+    let specular = trace_specular_chain(material, dir, seed);
+    let diffuse = trace_diffuse_component(material, seed + vec3<f32>(7.1, 3.3, 5.5));
     let fog_color = vec3<f32>(0.6, 0.75, 0.95);
     let fog = clamp(hit.travel / 400.0, 0.0, 1.0) * 0.6;
 
-    let reflectivity = clamp(info.reflectivity, 0.0, 1.0);
-    var reflection_origin = vec3<f32>(0.0, 0.0, 0.0);
-    var reflection_dir = vec3<f32>(0.0, 0.0, 0.0);
-    var has_reflection = false;
-    if reflectivity > 0.001 {
-        var candidate = reflect(dir, hit.normal);
-        let dir_len = length(candidate);
-        if dir_len > 1e-5 {
-            reflection_dir = candidate / dir_len;
-            reflection_origin = hit_point + hit.normal * 1e-3;
-            has_reflection = true;
-        }
-    }
-
-    return SurfaceSample(
-        surface + glow,
-        fog_color,
-        fog,
-        reflectivity,
-        reflection_origin,
-        reflection_dir,
-        has_reflection,
-    );
+    return SurfaceSample(material.direct, specular, diffuse, fog_color, fog);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -482,29 +608,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
 
     let clip = vec4<f32>(ndc, 1.0, 1.0);
-    let world = uniforms.inv_view_proj * clip;
+   let world = uniforms.inv_view_proj * clip;
     let world_pos = world.xyz / world.w;
     let origin = uniforms.eye.xyz;
     let dir = normalize(world_pos - origin);
+    let rng_seed = vec3<f32>(f32(gid.x), f32(gid.y), 0.5);
 
     let hit = trace_ray(origin, dir);
     var color = sky(dir);
     if hit.block != 0u {
-        let sample = evaluate_surface(hit, origin, dir);
-        var shaded = sample.color;
-
-        if sample.reflectivity > 0.001 && sample.has_reflection {
-            var reflection_color = sky(sample.reflection_dir);
-            let reflection_hit = trace_ray(sample.reflection_origin, sample.reflection_dir);
-            if reflection_hit.block != 0u {
-                let reflection_sample =
-                    evaluate_surface(reflection_hit, sample.reflection_origin, sample.reflection_dir);
-                reflection_color =
-                    lerp_vec3(reflection_sample.color, reflection_sample.fog_color, reflection_sample.fog);
-            }
-            shaded = shaded * (1.0 - sample.reflectivity) + reflection_color * sample.reflectivity;
-        }
-
+        let sample = evaluate_surface(hit, origin, dir, rng_seed);
+        let shaded = sample.direct + sample.specular + sample.diffuse;
         color = lerp_vec3(shaded, sample.fog_color, sample.fog);
     }
 

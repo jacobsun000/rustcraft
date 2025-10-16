@@ -535,8 +535,9 @@ impl VoxelGrid {
 struct GpuBlockInfo {
     face_tiles: [u32; 6],
     luminance: f32,
-    reflectivity: f32,
-    _padding: [f32; 2],
+    specular: f32,
+    diffuse: f32,
+    roughness: f32,
 }
 
 fn build_block_metadata() -> Vec<GpuBlockInfo> {
@@ -550,8 +551,9 @@ fn build_block_metadata() -> Vec<GpuBlockInfo> {
         entries.push(GpuBlockInfo {
             face_tiles,
             luminance: definition.luminance,
-            reflectivity: definition.reflectivity,
-            _padding: [0.0, 0.0],
+            specular: definition.specular,
+            diffuse: definition.diffuse,
+            roughness: definition.roughness,
         });
     }
     entries
