@@ -328,8 +328,8 @@ impl Renderer for RayTraceRenderer {
             compute_pass.set_bind_group(0, compute_bind_group, &[]);
 
             let workgroup_size = 8u32;
-            let dispatch_x = (width + workgroup_size - 1) / workgroup_size;
-            let dispatch_y = (height + workgroup_size - 1) / workgroup_size;
+            let dispatch_x = width.div_ceil(workgroup_size);
+            let dispatch_y = height.div_ceil(workgroup_size);
 
             compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         }

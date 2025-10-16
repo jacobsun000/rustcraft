@@ -170,10 +170,8 @@ impl MouseState {
     }
 
     pub fn frame_sleep(&self, frame_elapsed: f32) {
-        if let Some(cap) = self.max_frame_time {
-            if frame_elapsed < cap {
-                std::thread::sleep(Duration::from_secs_f32(cap - frame_elapsed));
-            }
+        if let Some(cap) = self.max_frame_time && frame_elapsed < cap {
+            std::thread::sleep(Duration::from_secs_f32(cap - frame_elapsed));
         }
     }
 }

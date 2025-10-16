@@ -1,5 +1,5 @@
 use crate::texture::AtlasLayout;
-use crate::world::{self, BlockId, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World};
+use crate::world::{BlockId, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World};
 
 #[derive(Clone, Copy)]
 pub struct MeshVertex {
@@ -13,6 +13,12 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
+#[derive(Clone, Copy)]
+struct BlockPosition {
+    world: [i32; 3],
+    origin: [f32; 3],
+}
+
 pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -> Mesh {
     let chunk = world
         .chunk(coord)
@@ -20,24 +26,37 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    let origin = world::chunk_origin(coord);
+    let chunk_origin = crate::world::chunk_origin(coord);
+    let chunk_base = [
+        coord.x * CHUNK_SIZE as i32,
+        coord.y * CHUNK_SIZE as i32,
+        coord.z * CHUNK_SIZE as i32,
+    ];
 
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
                 let block_id = chunk.get(x, y, z);
                 if let Some(kind) = solid_kind(block_id) {
+                    let world_position = [
+                        chunk_base[0] + x as i32,
+                        chunk_base[1] + y as i32,
+                        chunk_base[2] + z as i32,
+                    ];
+                    let block_origin = [
+                        chunk_origin[0] + x as f32,
+                        chunk_origin[1] + y as f32,
+                        chunk_origin[2] + z as f32,
+                    ];
+                    let block = BlockPosition {
+                        world: world_position,
+                        origin: block_origin,
+                    };
                     add_block_faces(
                         world,
                         atlas,
                         kind,
-                        [
-                            coord.x * CHUNK_SIZE as i32 + x as i32,
-                            coord.y * CHUNK_SIZE as i32 + y as i32,
-                            coord.z * CHUNK_SIZE as i32 + z as i32,
-                        ],
-                        origin,
-                        [x as f32, y as f32, z as f32],
+                        block,
                         &mut vertices,
                         &mut indices,
                     );
@@ -58,17 +77,15 @@ fn add_block_faces(
     world: &World,
     atlas: &AtlasLayout,
     kind: BlockKind,
-    world_position: [i32; 3],
-    chunk_origin: [f32; 3],
-    block_offset: [f32; 3],
+    block: BlockPosition,
     vertices: &mut Vec<MeshVertex>,
     indices: &mut Vec<u32>,
 ) {
     for face in FACES.iter() {
         let neighbor_world = [
-            world_position[0] + face.normal[0],
-            world_position[1] + face.normal[1],
-            world_position[2] + face.normal[2],
+            block.world[0] + face.normal[0],
+            block.world[1] + face.normal[1],
+            block.world[2] + face.normal[2],
         ];
 
         let neighbor_block =
@@ -82,9 +99,9 @@ fn add_block_faces(
             let base_index = vertices.len() as u32;
             for (corner, uv) in face.vertices.iter().zip(face.uvs.iter()) {
                 let position = [
-                    chunk_origin[0] + block_offset[0] + corner[0],
-                    chunk_origin[1] + block_offset[1] + corner[1],
-                    chunk_origin[2] + block_offset[2] + corner[2],
+                    block.origin[0] + corner[0],
+                    block.origin[1] + corner[1],
+                    block.origin[2] + corner[2],
                 ];
                 let tex_uv = atlas.map_uv(tile, *uv);
                 vertices.push(MeshVertex {

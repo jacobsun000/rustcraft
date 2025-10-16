@@ -134,7 +134,7 @@ impl Default for RawConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 struct RawKeyMap {
     move_forward: Option<String>,
@@ -143,19 +143,6 @@ struct RawKeyMap {
     move_right: Option<String>,
     move_up: Option<String>,
     move_down: Option<String>,
-}
-
-impl Default for RawKeyMap {
-    fn default() -> Self {
-        Self {
-            move_forward: None,
-            move_backward: None,
-            move_left: None,
-            move_right: None,
-            move_up: None,
-            move_down: None,
-        }
-    }
 }
 
 fn parse_key(name: Option<&str>, fallback: VirtualKeyCode) -> VirtualKeyCode {

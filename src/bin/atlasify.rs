@@ -43,10 +43,10 @@ fn main() -> io::Result<()> {
             )
         })?;
 
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     let target_texture_path = output_path
@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
     });
 
     let mut file = fs::File::create(output_path)?;
-    write!(
+    writeln!(
         file,
         "{}\n",
         serde_json::to_string_pretty(&metadata).unwrap()

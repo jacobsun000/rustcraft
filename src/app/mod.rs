@@ -25,14 +25,12 @@ pub async fn run() {
                     match event {
                         WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
                         WindowEvent::KeyboardInput { input, .. } => {
-                            if input.state == winit::event::ElementState::Pressed {
-                                if let Some(winit::event::VirtualKeyCode::Escape) =
+                            if input.state == winit::event::ElementState::Pressed
+                                && let Some(winit::event::VirtualKeyCode::Escape) =
                                     input.virtual_keycode
-                                {
-                                    if app_state.handle_escape() {
-                                        *control_flow = ControlFlow::Exit;
-                                    }
-                                }
+                                && app_state.handle_escape()
+                            {
+                                *control_flow = ControlFlow::Exit;
                             }
                         }
                         WindowEvent::Resized(physical_size) => {
