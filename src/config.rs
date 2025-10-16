@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub key_bindings: KeyBindings,
     pub present_mode: PresentModeSetting,
     pub max_fps: Option<f32>,
+    pub render_method: RenderMethodSetting,
 }
 
 impl AppConfig {
@@ -56,6 +57,7 @@ impl AppConfig {
         }
 
         let present_mode = PresentModeSetting::from_raw(raw.present_mode);
+        let render_method = RenderMethodSetting::from_raw(raw.render_method);
         let max_fps = raw.max_fps.and_then(|v| {
             if v.is_finite() && v > 0.0 {
                 Some(v.min(2400.0))
@@ -70,6 +72,7 @@ impl AppConfig {
             key_bindings,
             present_mode,
             max_fps,
+            render_method,
         }
     }
 }
@@ -81,6 +84,7 @@ impl Default for AppConfig {
             key_bindings: KeyBindings::default(),
             present_mode: PresentModeSetting::VSync,
             max_fps: None,
+            render_method: RenderMethodSetting::Rasterized,
         }
     }
 }
@@ -115,6 +119,7 @@ struct RawConfig {
     keymap: RawKeyMap,
     present_mode: Option<String>,
     max_fps: Option<f32>,
+    render_method: Option<String>,
 }
 
 impl Default for RawConfig {
@@ -124,6 +129,7 @@ impl Default for RawConfig {
             keymap: RawKeyMap::default(),
             present_mode: Some("vsync".into()),
             max_fps: None,
+            render_method: Some("rasterized".into()),
         }
     }
 }
@@ -264,6 +270,32 @@ impl PresentModeSetting {
             Some(other) => {
                 warn!("Unknown present_mode '{}'; falling back to vsync", other);
                 Self::VSync
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum RenderMethodSetting {
+    Rasterized,
+    RayTraced,
+}
+
+impl RenderMethodSetting {
+    pub fn from_raw(raw: Option<String>) -> Self {
+        match raw
+            .as_ref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("raytraced") | Some("ray-traced") | Some("raytrace") => Self::RayTraced,
+            Some("raster") | Some("rasterized") | Some("mesh") | None => Self::Rasterized,
+            Some(other) => {
+                warn!(
+                    "Unknown render_method '{}'; falling back to rasterized",
+                    other
+                );
+                Self::Rasterized
             }
         }
     }

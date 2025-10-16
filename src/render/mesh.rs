@@ -1,5 +1,5 @@
 use crate::texture::AtlasLayout;
-use crate::world::{Block, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World, chunk_origin};
+use crate::world::{self, BlockId, BlockKind, CHUNK_SIZE, ChunkCoord, FaceDirection, World};
 
 #[derive(Clone, Copy)]
 pub struct MeshVertex {
@@ -20,12 +20,13 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    let origin = chunk_origin(coord);
+    let origin = world::chunk_origin(coord);
 
     for y in 0..CHUNK_SIZE {
         for z in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                if let Block::Solid(kind) = chunk.get(x, y, z) {
+                let block_id = chunk.get(x, y, z);
+                if let Some(kind) = solid_kind(block_id) {
                     add_block_faces(
                         world,
                         atlas,
@@ -48,6 +49,11 @@ pub fn build_chunk_mesh(world: &World, coord: ChunkCoord, atlas: &AtlasLayout) -
     Mesh { vertices, indices }
 }
 
+fn solid_kind(id: BlockId) -> Option<BlockKind> {
+    let kind = BlockKind::from_id(id);
+    if kind.is_solid() { Some(kind) } else { None }
+}
+
 fn add_block_faces(
     world: &World,
     atlas: &AtlasLayout,
@@ -65,10 +71,10 @@ fn add_block_faces(
             world_position[2] + face.normal[2],
         ];
 
-        if matches!(
-            world.block_at(neighbor_world[0], neighbor_world[1], neighbor_world[2]),
-            Block::Air
-        ) {
+        let neighbor_block =
+            world.block_at(neighbor_world[0], neighbor_world[1], neighbor_world[2]);
+
+        if !BlockKind::from_id(neighbor_block).is_solid() {
             let tile = kind.tile_for_face(face.direction);
             let shade = face.light;
             let color = [shade, shade, shade];
