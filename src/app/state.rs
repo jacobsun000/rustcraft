@@ -13,7 +13,7 @@ use crate::input::{CameraController, MouseState};
 use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, Renderer};
 use crate::text::DebugOverlay;
 use crate::texture::TextureAtlas;
-use crate::world::{chunk_coord_from_block, ChunkCoord, World};
+use crate::world::{ChunkCoord, World, chunk_coord_from_block};
 
 const CHUNK_LOAD_RADIUS: i32 = 4;
 const CHUNK_VERTICAL_RADIUS: i32 = 1;
@@ -202,6 +202,31 @@ impl AppState {
 
     pub fn window(&self) -> &Window {
         &self.window
+    }
+
+    #[allow(dead_code)]
+    pub fn camera_controller_mut(&mut self) -> &mut CameraController {
+        &mut self.camera_controller
+    }
+
+    #[allow(dead_code)]
+    pub fn last_frame_seconds(&self) -> f32 {
+        self.last_frame_time
+    }
+
+    #[allow(dead_code)]
+    pub fn chunk_count(&self) -> usize {
+        self.world.chunk_count()
+    }
+
+    #[allow(dead_code)]
+    pub fn renderer_kind(&self) -> crate::render::RendererKind {
+        self.renderer.kind()
+    }
+
+    #[allow(dead_code)]
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {

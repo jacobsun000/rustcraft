@@ -2,7 +2,7 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-mod state;
+pub mod state;
 
 pub async fn run() {
     let event_loop = EventLoop::new();
