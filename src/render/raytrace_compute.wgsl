@@ -76,19 +76,29 @@ fn schlick(f0: f32, cos_theta: f32) -> f32 {
     return f0 + (1.0 - f0) * factor;
 }
 
-fn hash_noise(seed: vec3<f32>) -> f32 {
-    let dot_seed = dot(seed, vec3<f32>(12.9898, 78.233, 45.164));
-    return fract(sin(dot_seed) * 43758.5453);
+fn hash_u32(value: u32) -> u32 {
+    var x = value;
+    x = (x ^ (x >> 17u)) * 0xed5ad4bbu;
+    x = (x ^ (x >> 11u)) * 0xac4c1b51u;
+    x = (x ^ (x >> 15u)) * 0x31848babu;
+    return x ^ (x >> 14u);
 }
 
-fn random_scalar(seed: vec3<f32>, offset: f32) -> f32 {
-    return hash_noise(seed + vec3<f32>(offset, offset * 1.31, offset * 2.17));
+fn scramble_seed(seed: vec3<u32>, offset: u32) -> u32 {
+    let mix = seed.x ^ (seed.y * 0x9e3779b9u) ^ (seed.z * 0x7f4a7c15u) ^ offset;
+    return hash_u32(mix);
 }
 
-fn random_vec2(seed: vec3<f32>, offset: f32) -> vec2<f32> {
+fn random_scalar(seed: vec3<u32>, offset: u32) -> f32 {
+    let value = scramble_seed(seed, offset);
+    let mantissa = value & 0x00FFFFFFu;
+    return f32(mantissa) / f32(0x01000000u);
+}
+
+fn random_vec2(seed: vec3<u32>, offset: u32) -> vec2<f32> {
     return vec2<f32>(
         random_scalar(seed, offset),
-        random_scalar(seed, offset + 19.37),
+        random_scalar(seed, offset ^ 0xa511e9b3u),
     );
 }
 
@@ -522,7 +532,7 @@ fn gather_material(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> Materia
     );
 }
 
-fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<f32>) -> vec3<f32> {
+fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<u32>) -> vec3<f32> {
     let cos_theta = saturate(dot(material.normal, -incoming));
     let base_reflect = schlick(material.specular, cos_theta);
     if base_reflect < 0.005 {
@@ -532,7 +542,7 @@ fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<
     var color = vec3<f32>(0.0);
     var throughput = vec3<f32>(base_reflect);
     var ray_origin = material.position + material.normal * 1e-3;
-    let jitter_seed = random_vec2(seed, 1.0);
+    let jitter_seed = random_vec2(seed, 1u);
     let jitter = sample_cosine_hemisphere(material.normal, jitter_seed);
     var ray_dir = normalize(mix(reflect(incoming, material.normal), jitter, material.roughness));
 
@@ -556,7 +566,7 @@ fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<
             break;
         }
 
-        let xi = random_vec2(seed, f32(bounce) * 23.0 + 2.5);
+        let xi = random_vec2(seed, 23u * (bounce + 1u) + 5u);
         let jitter_dir = sample_cosine_hemisphere(sample_material.normal, xi);
         ray_origin = sample_material.position + sample_material.normal * 1e-3;
         ray_dir =
@@ -566,12 +576,12 @@ fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<
     return color;
 }
 
-fn trace_diffuse_component(material: MaterialInfo, seed: vec3<f32>) -> vec3<f32> {
+fn trace_diffuse_component(material: MaterialInfo, seed: vec3<u32>) -> vec3<f32> {
     if material.diffuse < 0.01 {
         return vec3<f32>(0.0);
     }
 
-    let xi = random_vec2(seed, 11.0);
+    let xi = random_vec2(seed, 11u);
     let bounce_dir = sample_cosine_hemisphere(material.normal, xi);
     let bounce_origin = material.position + material.normal * 1e-3;
     let hit = trace_ray(bounce_origin, bounce_dir);
@@ -587,10 +597,10 @@ fn trace_diffuse_component(material: MaterialInfo, seed: vec3<f32>) -> vec3<f32>
     return indirect;
 }
 
-fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec3<f32>) -> SurfaceSample {
+fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec3<u32>) -> SurfaceSample {
     let material = gather_material(hit, origin, dir);
     let specular = trace_specular_chain(material, dir, seed);
-    let diffuse = trace_diffuse_component(material, seed + vec3<f32>(7.1, 3.3, 5.5));
+    let diffuse = trace_diffuse_component(material, vec3<u32>(seed.x ^ 0x6c8e9cf5u, seed.y + 0x52dce729u, seed.z + 0x7f4a7c15u));
     let fog_color = vec3<f32>(0.6, 0.75, 0.95);
     let fog = clamp(hit.travel / 400.0, 0.0, 1.0) * 0.6;
 
@@ -617,7 +627,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_vec = uniforms.view_to_world * vec4<f32>(view_dir, 0.0);
     let origin = uniforms.eye.xyz;
     let dir = normalize(world_vec.xyz);
-    let rng_seed = vec3<f32>(f32(gid.x), f32(gid.y), 0.5);
+    let rng_seed = vec3<u32>(gid.x, gid.y, 0u);
 
     let hit = trace_ray(origin, dir);
     var color = sky(dir);
