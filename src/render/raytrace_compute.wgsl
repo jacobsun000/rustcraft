@@ -1,6 +1,5 @@
 struct RayUniforms {
-    inv_projection: mat4x4<f32>,
-    view_to_world: mat4x4<f32>,
+    frustum: array<vec4<f32>, 4>,
     eye: vec4<f32>,
     grid_origin: vec4<i32>,
     grid_size: vec4<u32>,
@@ -127,19 +126,20 @@ fn sample_cosine_hemisphere(normal: vec3<f32>, xi: vec2<f32>) -> vec3<f32> {
 }
 
 fn face_index(normal: vec3<f32>) -> u32 {
-    if normal.x < -0.5 {
+    let threshold = 0.5;
+    if normal.x < -threshold {
         return 0u;
     }
-    if normal.x > 0.5 {
+    if normal.x > threshold {
         return 1u;
     }
-    if normal.y < -0.5 {
+    if normal.y < -threshold {
         return 2u;
     }
-    if normal.y > 0.5 {
+    if normal.y > threshold {
         return 3u;
     }
-    if normal.z < -0.5 {
+    if normal.z < -threshold {
         return 4u;
     }
     return 5u;
@@ -618,17 +618,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let res = vec2<f32>(f32(resolution.x), f32(resolution.y));
     let pixel = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
-    let ndc = vec2<f32>(
-        pixel.x / res.x * 2.0 - 1.0,
-        1.0 - pixel.y / res.y * 2.0,
-    );
+    let uv = pixel / res;
 
-    let clip = vec4<f32>(ndc, 1.0, 1.0);
-    let view = uniforms.inv_projection * clip;
-    let view_dir = normalize(view.xyz / view.w);
-    let world_vec = uniforms.view_to_world * vec4<f32>(view_dir, 0.0);
+    let f0 = uniforms.frustum[0].xyz;
+    let f1 = uniforms.frustum[1].xyz;
+    let f2 = uniforms.frustum[2].xyz;
+    let f3 = uniforms.frustum[3].xyz;
+
+    let top = normalize(mix(f0, f1, uv.x));
+    let bottom = normalize(mix(f2, f3, uv.x));
+    let dir = normalize(mix(bottom, top, 1.0 - uv.y));
     let origin = uniforms.eye.xyz;
-    let dir = normalize(world_vec.xyz);
     let rng_seed = vec3<u32>(gid.x, gid.y, 0u);
 
     let hit = trace_ray(origin, dir);

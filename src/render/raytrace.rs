@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
-use glam::IVec3;
+use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::block::{self, BLOCK_AIR, BlockId};
@@ -334,9 +334,10 @@ impl RayTraceRenderer {
 
         let eye = ctx.camera.position;
 
+        let frustum = compute_frustum_rays(inv_projection, view_to_world);
+
         let uniforms = RayUniforms {
-            inv_projection: inv_projection.to_cols_array_2d(),
-            view_to_world: view_to_world.to_cols_array_2d(),
+            frustum,
             eye: [eye.x, eye.y, eye.z, 1.0],
             grid_origin: [grid.origin.x, grid.origin.y, grid.origin.z, 0],
             grid_size: [
@@ -591,13 +592,34 @@ fn encode_tile_id(tile: TileId) -> u32 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RayUniforms {
-    inv_projection: [[f32; 4]; 4],
-    view_to_world: [[f32; 4]; 4],
+    frustum: [[f32; 4]; 4],
     eye: [f32; 4],
     grid_origin: [i32; 4],
     grid_size: [u32; 4],
     stride: [u32; 4],
     atlas: [u32; 4],
+}
+
+fn compute_frustum_rays(inv_projection: Mat4, view_to_world: Mat4) -> [[f32; 4]; 4] {
+    let corners = [
+        Vec2::new(-1.0, 1.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(-1.0, -1.0),
+        Vec2::new(1.0, -1.0),
+    ];
+
+    let mut rays = [[0.0; 4]; 4];
+
+    for (idx, ndc) in corners.iter().enumerate() {
+        let clip = Vec4::new(ndc.x, ndc.y, 1.0, 1.0);
+        let view = inv_projection * clip;
+        let view_dir = Vec3::new(view.x, view.y, view.z) / view.w;
+        let world = view_to_world * Vec4::new(view_dir.x, view_dir.y, view_dir.z, 0.0);
+        let world_dir = Vec3::new(world.x, world.y, world.z).normalize();
+        rays[idx] = [world_dir.x, world_dir.y, world_dir.z, 0.0];
+    }
+
+    rays
 }
 
 fn create_fullscreen_quad(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {
