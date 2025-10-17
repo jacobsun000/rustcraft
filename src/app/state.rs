@@ -10,7 +10,7 @@ use crate::camera::{Camera, CameraUniform, Projection};
 use crate::config::{self, AppConfig, RenderMethodSetting};
 use crate::fps::FpsCounter;
 use crate::input::{CameraController, MouseState};
-use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, Renderer};
+use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, RenderTimings, Renderer};
 use crate::text::DebugOverlay;
 use crate::texture::TextureAtlas;
 use crate::world::{ChunkCoord, World, chunk_coord_from_block};
@@ -227,6 +227,11 @@ impl AppState {
     #[allow(dead_code)]
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
+    }
+
+    #[allow(dead_code)]
+    pub fn renderer_timings(&self) -> Option<RenderTimings> {
+        self.renderer.timings()
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {

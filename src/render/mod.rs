@@ -8,6 +8,16 @@ pub use raytrace::RayTraceRenderer;
 use crate::camera::{Camera, Projection};
 use crate::world::World;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderTimings {
+    pub total_ms: f32,
+    pub scene_ms: f32,
+    pub uniforms_ms: f32,
+    pub compute_ms: f32,
+    pub present_ms: f32,
+    pub voxels: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RendererKind {
     Rasterized,
@@ -49,4 +59,9 @@ pub trait Renderer {
         output_view: &wgpu::TextureView,
         ctx: &FrameContext,
     );
+
+    #[allow(dead_code)]
+    fn timings(&self) -> Option<RenderTimings> {
+        None
+    }
 }

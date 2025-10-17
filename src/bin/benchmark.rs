@@ -109,7 +109,12 @@ fn run_benchmark() {
                     }
                 }
 
-                metrics.record(app_state.last_frame_seconds(), app_state.chunk_count());
+                let timings = app_state.renderer_timings();
+                metrics.record(
+                    app_state.last_frame_seconds(),
+                    app_state.chunk_count(),
+                    timings,
+                );
 
                 if benchmark_start.elapsed() >= target_duration {
                     metrics.print_summary(
@@ -321,14 +326,23 @@ fn default_segments() -> Vec<ScriptSegment> {
 struct BenchmarkMetrics {
     frame_times: Vec<f32>,
     chunk_counts: Vec<usize>,
+    timings: TimingStats,
 }
 
 impl BenchmarkMetrics {
-    fn record(&mut self, frame_time: f32, chunk_count: usize) {
+    fn record(
+        &mut self,
+        frame_time: f32,
+        chunk_count: usize,
+        timings: Option<render::RenderTimings>,
+    ) {
         if frame_time.is_finite() && frame_time > 0.0 {
             self.frame_times.push(frame_time);
         }
         self.chunk_counts.push(chunk_count);
+        if let Some(timing) = timings {
+            self.timings.record(timing);
+        }
     }
 
     fn print_summary(
@@ -383,7 +397,7 @@ impl BenchmarkMetrics {
             present_mode_label(present_mode)
         );
         println!(
-            "- Frame ms: avg {:>5.2} | p95 {:>5.2} | min {:>5.2} | max {:>5.2}",
+            "- Frame ms: avg {:>5.4} | p95 {:>5.4} | min {:>5.4} | max {:>5.4}",
             avg_frame * 1000.0,
             p95_frame * 1000.0,
             min_frame * 1000.0,
@@ -397,7 +411,73 @@ impl BenchmarkMetrics {
             "- Loaded chunks: avg {:>5.1} | min {:>3} | max {:>3}",
             chunk_avg, chunk_min, chunk_max
         );
+
+        if self.timings.samples > 0 {
+            let averages = self.timings.averages();
+            println!(
+                "- Render timings avg ms: total {:>5.4} | prep {:>5.4} | uniforms {:>5.4} | compute {:>5.4} | present {:>5.4}",
+                averages.total,
+                averages.scene,
+                averages.uniforms,
+                averages.compute,
+                averages.present
+            );
+            println!(
+                "- Voxels traced: avg {:>8.0} | max {:>8}",
+                averages.voxels_avg, self.timings.voxels_max
+            );
+        }
     }
+}
+
+#[derive(Default)]
+struct TimingStats {
+    samples: u32,
+    total_ms: f64,
+    scene_ms: f64,
+    uniforms_ms: f64,
+    compute_ms: f64,
+    present_ms: f64,
+    voxels_total: u64,
+    voxels_max: u32,
+}
+
+impl TimingStats {
+    fn record(&mut self, timings: render::RenderTimings) {
+        self.samples = self.samples.saturating_add(1);
+        self.total_ms += timings.total_ms as f64;
+        self.scene_ms += timings.scene_ms as f64;
+        self.uniforms_ms += timings.uniforms_ms as f64;
+        self.compute_ms += timings.compute_ms as f64;
+        self.present_ms += timings.present_ms as f64;
+        self.voxels_total = self.voxels_total.saturating_add(timings.voxels as u64);
+        self.voxels_max = self.voxels_max.max(timings.voxels);
+    }
+
+    fn averages(&self) -> TimingAverages {
+        if self.samples == 0 {
+            return TimingAverages::default();
+        }
+        let inv = 1.0 / self.samples as f64;
+        TimingAverages {
+            total: (self.total_ms * inv) as f32,
+            scene: (self.scene_ms * inv) as f32,
+            uniforms: (self.uniforms_ms * inv) as f32,
+            compute: (self.compute_ms * inv) as f32,
+            present: (self.present_ms * inv) as f32,
+            voxels_avg: self.voxels_total as f64 * inv,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TimingAverages {
+    total: f32,
+    scene: f32,
+    uniforms: f32,
+    compute: f32,
+    present: f32,
+    voxels_avg: f64,
 }
 
 fn present_mode_label(mode: PresentModeSetting) -> &'static str {

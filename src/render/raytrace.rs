@@ -5,7 +5,7 @@ use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::block::{self, BLOCK_AIR, BlockId};
-use crate::render::{FrameContext, Renderer, RendererKind};
+use crate::render::{FrameContext, RenderTimings, Renderer, RendererKind};
 use crate::texture::{AtlasLayout, TextureAtlas, TileId};
 use crate::world::{CHUNK_SIZE, World, chunk_min_corner};
 
@@ -29,6 +29,8 @@ pub struct RayTraceRenderer {
     scene: Option<VoxelScene>,
     surface_format: wgpu::TextureFormat,
     last_log: Instant,
+    last_timings: RenderTimings,
+    timings_valid: bool,
 }
 
 impl RayTraceRenderer {
@@ -190,6 +192,8 @@ impl RayTraceRenderer {
             scene: None,
             surface_format,
             last_log: Instant::now(),
+            last_timings: RenderTimings::default(),
+            timings_valid: false,
         }
     }
 
@@ -391,17 +395,30 @@ impl Renderer for RayTraceRenderer {
         let width = ctx.surface_config.width;
         let height = ctx.surface_config.height;
 
+        let frame_start = Instant::now();
+        let mut timings = RenderTimings::default();
+
+        let prep_start = Instant::now();
         self.ensure_screen_texture(ctx.device, width, height);
         self.ensure_scene(ctx.device, ctx.world);
+        timings.scene_ms = prep_start.elapsed().as_secs_f32() * 1000.0;
 
         let (scene, compute_bind_group) = match (&self.scene, &self.compute_bind_group) {
             (Some(scene), Some(bind_group)) => (scene, bind_group),
-            _ => return,
+            _ => {
+                self.timings_valid = false;
+                return;
+            }
         };
 
+        timings.voxels = scene.grid.voxels.len() as u32;
+
+        let uniform_start = Instant::now();
         self.update_uniforms(ctx.queue, ctx, &scene.grid);
+        timings.uniforms_ms = uniform_start.elapsed().as_secs_f32() * 1000.0;
 
         {
+            let compute_start = Instant::now();
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Ray tracing compute pass"),
             });
@@ -413,6 +430,8 @@ impl Renderer for RayTraceRenderer {
             let dispatch_y = height.div_ceil(workgroup_size);
 
             compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+            drop(compute_pass);
+            timings.compute_ms = compute_start.elapsed().as_secs_f32() * 1000.0;
         }
 
         if self.last_log.elapsed().as_secs_f32() > 1.0 {
@@ -429,6 +448,7 @@ impl Renderer for RayTraceRenderer {
 
         let screen = self.screen.as_ref().expect("screen texture must exist");
 
+        let present_start = Instant::now();
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Ray traced present"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -447,6 +467,20 @@ impl Renderer for RayTraceRenderer {
         render_pass.set_vertex_buffer(0, self.fullscreen_vertex.slice(..));
         render_pass.set_index_buffer(self.fullscreen_index.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+        drop(render_pass);
+        timings.present_ms = present_start.elapsed().as_secs_f32() * 1000.0;
+
+        timings.total_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        self.last_timings = timings;
+        self.timings_valid = true;
+    }
+
+    fn timings(&self) -> Option<RenderTimings> {
+        if self.timings_valid {
+            Some(self.last_timings)
+        } else {
+            None
+        }
     }
 }
 
