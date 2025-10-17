@@ -34,7 +34,7 @@ var block_atlas: texture_2d<f32>;
 @group(0) @binding(5)
 var atlas_sampler: sampler;
 
-const SUN_DIRECTION: vec3<f32> = vec3<f32>(0.3, 0.9, 0.5);
+const SUN_DIRECTION: vec3<f32> = vec3<f32>(0.2795085, 0.8385254, 0.4658469);
 const PI: f32 = 3.14159265359;
 const MAX_SPECULAR_BOUNCES: u32 = 2u;
 const ROUGH_SPECULAR_LIMIT: f32 = 0.4;
@@ -166,28 +166,22 @@ fn face_uv(normal: vec3<f32>, local: vec3<f32>) -> vec2<f32> {
 }
 
 fn tile_for_face(info: BlockInfo, face: u32) -> u32 {
-    var tile = info.face_tiles[0u];
-    switch face {
-        case 0u: {
-            tile = info.face_tiles[0u];
-        }
-        case 1u: {
-            tile = info.face_tiles[1u];
-        }
-        case 2u: {
-            tile = info.face_tiles[2u];
-        }
-        case 3u: {
-            tile = info.face_tiles[3u];
-        }
-        case 4u: {
-            tile = info.face_tiles[4u];
-        }
-        default: {
-            tile = info.face_tiles[5u];
-        }
+    if face == 0u {
+        return info.face_tiles[0u];
     }
-    return tile;
+    if face == 1u {
+        return info.face_tiles[1u];
+    }
+    if face == 2u {
+        return info.face_tiles[2u];
+    }
+    if face == 3u {
+        return info.face_tiles[3u];
+    }
+    if face == 4u {
+        return info.face_tiles[4u];
+    }
+    return info.face_tiles[5u];
 }
 
 fn voxel_count() -> u32 {
@@ -513,8 +507,7 @@ fn gather_material(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> Materia
     let uv = face_uv(hit.normal, local);
     let albedo = sample_tile(tile, uv);
 
-    let sun = normalize(SUN_DIRECTION);
-    let light = max(dot(hit.normal, sun), 0.0);
+    let light = max(dot(hit.normal, SUN_DIRECTION), 0.0);
     let diffuse_component = albedo * light * saturate(info.diffuse);
     let emission = albedo * info.luminance * 0.12;
     let direct = diffuse_component + emission;
