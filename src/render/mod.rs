@@ -15,6 +15,8 @@ pub struct RenderTimings {
     pub uniforms_ms: f32,
     pub compute_ms: f32,
     pub present_ms: f32,
+    pub gpu_compute_ms: f32,
+    pub gpu_present_ms: f32,
     pub voxels: u32,
 }
 

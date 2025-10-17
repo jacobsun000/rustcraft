@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::mpsc, time::Instant};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
@@ -31,11 +31,14 @@ pub struct RayTraceRenderer {
     last_log: Instant,
     last_timings: RenderTimings,
     timings_valid: bool,
+    timestamp_query: Option<TimestampQuery>,
+    gpu_sample: Option<TimestampSample>,
 }
 
 impl RayTraceRenderer {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         atlas: &TextureAtlas,
     ) -> Self {
@@ -194,6 +197,8 @@ impl RayTraceRenderer {
             last_log: Instant::now(),
             last_timings: RenderTimings::default(),
             timings_valid: false,
+            timestamp_query: TimestampQuery::new(device, queue),
+            gpu_sample: None,
         }
     }
 
@@ -398,6 +403,13 @@ impl Renderer for RayTraceRenderer {
         let frame_start = Instant::now();
         let mut timings = RenderTimings::default();
 
+        self.gpu_sample = None;
+        if let Some(ts) = self.timestamp_query.as_mut() {
+            if let Some(sample) = ts.begin_frame(ctx.device) {
+                self.gpu_sample = Some(sample);
+            }
+        }
+
         let prep_start = Instant::now();
         self.ensure_screen_texture(ctx.device, width, height);
         self.ensure_scene(ctx.device, ctx.world);
@@ -419,6 +431,9 @@ impl Renderer for RayTraceRenderer {
 
         {
             let compute_start = Instant::now();
+            if let Some(ts) = self.timestamp_query.as_ref() {
+                ts.write_compute_start(encoder);
+            }
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Ray tracing compute pass"),
             });
@@ -431,6 +446,9 @@ impl Renderer for RayTraceRenderer {
 
             compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
             drop(compute_pass);
+            if let Some(ts) = self.timestamp_query.as_ref() {
+                ts.write_compute_end(encoder);
+            }
             timings.compute_ms = compute_start.elapsed().as_secs_f32() * 1000.0;
         }
 
@@ -449,6 +467,9 @@ impl Renderer for RayTraceRenderer {
         let screen = self.screen.as_ref().expect("screen texture must exist");
 
         let present_start = Instant::now();
+        if let Some(ts) = self.timestamp_query.as_ref() {
+            ts.write_present_start(encoder);
+        }
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Ray traced present"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -468,9 +489,17 @@ impl Renderer for RayTraceRenderer {
         render_pass.set_index_buffer(self.fullscreen_index.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.index_count, 0, 0..1);
         drop(render_pass);
+        if let Some(ts) = self.timestamp_query.as_mut() {
+            ts.write_present_end(encoder);
+            ts.resolve(encoder);
+        }
         timings.present_ms = present_start.elapsed().as_secs_f32() * 1000.0;
 
         timings.total_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        if let Some(sample) = self.gpu_sample {
+            timings.gpu_compute_ms = sample.compute_ms;
+            timings.gpu_present_ms = sample.present_ms;
+        }
         self.last_timings = timings;
         self.timings_valid = true;
     }
@@ -494,6 +523,12 @@ struct ScreenTexture {
 struct VoxelScene {
     grid: VoxelGrid,
     chunk_count: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TimestampSample {
+    compute_ms: f32,
+    present_ms: f32,
 }
 
 struct VoxelGrid {
@@ -654,6 +689,113 @@ fn compute_frustum_rays(inv_projection: Mat4, view_to_world: Mat4) -> [[f32; 4];
     }
 
     rays
+}
+
+struct TimestampQuery {
+    query_set: wgpu::QuerySet,
+    resolve_buffer: wgpu::Buffer,
+    readback_buffer: wgpu::Buffer,
+    pending: bool,
+    period: f32,
+}
+
+impl TimestampQuery {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
+        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return None;
+        }
+
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Ray trace timestamps"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 4,
+        });
+
+        let size = (std::mem::size_of::<u64>() * 4) as u64;
+        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Ray trace timestamp resolve buffer"),
+            size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Ray trace timestamp readback buffer"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Some(Self {
+            query_set,
+            resolve_buffer,
+            readback_buffer,
+            pending: false,
+            period: queue.get_timestamp_period(),
+        })
+    }
+
+    fn begin_frame(&mut self, device: &wgpu::Device) -> Option<TimestampSample> {
+        if !self.pending {
+            return None;
+        }
+
+        let slice = self.readback_buffer.slice(..);
+        let (sender, receiver) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        device.poll(wgpu::Maintain::Wait);
+        receiver.recv().ok()?.ok()?;
+        let data = slice.get_mapped_range();
+        let values: &[u64] = bytemuck::cast_slice(&data);
+        if values.len() < 4 {
+            drop(data);
+            self.readback_buffer.unmap();
+            self.pending = false;
+            return None;
+        }
+
+        let compute_ticks = values[1].saturating_sub(values[0]);
+        let present_ticks = values[3].saturating_sub(values[2]);
+        drop(data);
+        self.readback_buffer.unmap();
+        self.pending = false;
+
+        let factor = self.period / 1_000_000.0;
+        Some(TimestampSample {
+            compute_ms: compute_ticks as f32 * factor,
+            present_ms: present_ticks as f32 * factor,
+        })
+    }
+
+    fn write_compute_start(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.write_timestamp(&self.query_set, 0);
+    }
+
+    fn write_compute_end(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.write_timestamp(&self.query_set, 1);
+    }
+
+    fn write_present_start(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.write_timestamp(&self.query_set, 2);
+    }
+
+    fn write_present_end(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.write_timestamp(&self.query_set, 3);
+    }
+
+    fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.resolve_query_set(&self.query_set, 0..4, &self.resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(
+            &self.resolve_buffer,
+            0,
+            &self.readback_buffer,
+            0,
+            (std::mem::size_of::<u64>() * 4) as u64,
+        );
+        self.pending = true;
+    }
 }
 
 fn create_fullscreen_quad(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {

@@ -63,11 +63,16 @@ impl AppState {
             })
             .await
             .expect("Failed to find adapter");
+        let adapter_features = adapter.features();
+        let mut required_features = wgpu::Features::empty();
+        if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Primary device"),
-                    features: wgpu::Features::empty(),
+                    features: required_features,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -166,9 +171,12 @@ impl AppState {
                 &block_atlas,
                 &camera_bind_group_layout,
             )),
-            RenderMethodSetting::RayTraced => {
-                Box::new(RayTraceRenderer::new(&device, surface_format, &block_atlas))
-            }
+            RenderMethodSetting::RayTraced => Box::new(RayTraceRenderer::new(
+                &device,
+                &queue,
+                surface_format,
+                &block_atlas,
+            )),
         };
 
         let debug_overlay = DebugOverlay::new(&device, &queue, surface_config.format);

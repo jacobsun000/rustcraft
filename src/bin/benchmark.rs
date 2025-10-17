@@ -423,6 +423,10 @@ impl BenchmarkMetrics {
                 averages.present
             );
             println!(
+                "- GPU timings avg ms: compute {:>5.4} | blit {:>5.4}",
+                averages.gpu_compute, averages.gpu_present
+            );
+            println!(
                 "- Voxels traced: avg {:>8.0} | max {:>8}",
                 averages.voxels_avg, self.timings.voxels_max
             );
@@ -438,6 +442,8 @@ struct TimingStats {
     uniforms_ms: f64,
     compute_ms: f64,
     present_ms: f64,
+    gpu_compute_ms: f64,
+    gpu_present_ms: f64,
     voxels_total: u64,
     voxels_max: u32,
 }
@@ -450,6 +456,8 @@ impl TimingStats {
         self.uniforms_ms += timings.uniforms_ms as f64;
         self.compute_ms += timings.compute_ms as f64;
         self.present_ms += timings.present_ms as f64;
+        self.gpu_compute_ms += timings.gpu_compute_ms as f64;
+        self.gpu_present_ms += timings.gpu_present_ms as f64;
         self.voxels_total = self.voxels_total.saturating_add(timings.voxels as u64);
         self.voxels_max = self.voxels_max.max(timings.voxels);
     }
@@ -465,6 +473,8 @@ impl TimingStats {
             uniforms: (self.uniforms_ms * inv) as f32,
             compute: (self.compute_ms * inv) as f32,
             present: (self.present_ms * inv) as f32,
+            gpu_compute: (self.gpu_compute_ms * inv) as f32,
+            gpu_present: (self.gpu_present_ms * inv) as f32,
             voxels_avg: self.voxels_total as f64 * inv,
         }
     }
@@ -477,6 +487,8 @@ struct TimingAverages {
     uniforms: f32,
     compute: f32,
     present: f32,
+    gpu_compute: f32,
+    gpu_present: f32,
     voxels_avg: f64,
 }
 
