@@ -107,6 +107,36 @@ pub fn chunk_min_corner(coord: ChunkCoord) -> IVec3 {
     )
 }
 
+pub fn chunk_coord_from_block(position: IVec3) -> ChunkCoord {
+    ChunkCoord {
+        x: div_floor(position.x, CHUNK_SIZE as i32),
+        y: div_floor(position.y, CHUNK_SIZE as i32),
+        z: div_floor(position.z, CHUNK_SIZE as i32),
+    }
+}
+
+impl World {
+    pub fn ensure_chunks_in_radius(
+        &mut self,
+        center: ChunkCoord,
+        radius: i32,
+        vertical_radius: i32,
+    ) {
+        for dy in -vertical_radius..=vertical_radius {
+            for dz in -radius..=radius {
+                for dx in -radius..=radius {
+                    let coord = ChunkCoord {
+                        x: center.x + dx,
+                        y: center.y + dy,
+                        z: center.z + dz,
+                    };
+                    self.ensure_chunk(coord);
+                }
+            }
+        }
+    }
+}
+
 fn generate_chunk(coord: ChunkCoord) -> Chunk {
     let mut chunk = Chunk::new();
     let base_x = coord.x * CHUNK_SIZE as i32;

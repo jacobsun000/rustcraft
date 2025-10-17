@@ -163,8 +163,8 @@ impl RayTraceRenderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -329,12 +329,14 @@ impl RayTraceRenderer {
     fn update_uniforms(&self, queue: &wgpu::Queue, ctx: &FrameContext, grid: &VoxelGrid) {
         let view = ctx.camera.view_matrix();
         let proj = ctx.projection.matrix();
-        let inv_view_proj = (proj * view).inverse();
+        let inv_projection = proj.inverse();
+        let view_to_world = view.inverse();
 
         let eye = ctx.camera.position;
 
         let uniforms = RayUniforms {
-            inv_view_proj: inv_view_proj.to_cols_array_2d(),
+            inv_projection: inv_projection.to_cols_array_2d(),
+            view_to_world: view_to_world.to_cols_array_2d(),
             eye: [eye.x, eye.y, eye.z, 1.0],
             grid_origin: [grid.origin.x, grid.origin.y, grid.origin.z, 0],
             grid_size: [
@@ -568,7 +570,8 @@ fn encode_tile_id(tile: TileId) -> u32 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RayUniforms {
-    inv_view_proj: [[f32; 4]; 4],
+    inv_projection: [[f32; 4]; 4],
+    view_to_world: [[f32; 4]; 4],
     eye: [f32; 4],
     grid_origin: [i32; 4],
     grid_size: [u32; 4],

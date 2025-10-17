@@ -1,5 +1,6 @@
 struct RayUniforms {
-    inv_view_proj: mat4x4<f32>,
+    inv_projection: mat4x4<f32>,
+    view_to_world: mat4x4<f32>,
     eye: vec4<f32>,
     grid_origin: vec4<i32>,
     grid_size: vec4<u32>,
@@ -136,10 +137,10 @@ fn face_index(normal: vec3<f32>) -> u32 {
 fn face_uv(normal: vec3<f32>, local: vec3<f32>) -> vec2<f32> {
     let clamped = clamp(local, vec3<f32>(0.0), vec3<f32>(0.999));
     if normal.x > 0.5 {
-        return vec2<f32>(clamped.z, clamped.y);
+        return vec2<f32>(clamped.z, 1.0 - clamped.y);
     }
     if normal.x < -0.5 {
-        return vec2<f32>(1.0 - clamped.z, clamped.y);
+        return vec2<f32>(1.0 - clamped.z, 1.0 - clamped.y);
     }
     if normal.y > 0.5 {
         return vec2<f32>(clamped.x, clamped.z);
@@ -148,9 +149,9 @@ fn face_uv(normal: vec3<f32>, local: vec3<f32>) -> vec2<f32> {
         return vec2<f32>(clamped.x, 1.0 - clamped.z);
     }
     if normal.z > 0.5 {
-        return vec2<f32>(clamped.x, clamped.y);
+        return vec2<f32>(clamped.x, 1.0 - clamped.y);
     }
-    return vec2<f32>(clamped.x, clamped.y);
+    return vec2<f32>(clamped.x, 1.0 - clamped.y);
 }
 
 fn tile_for_face(info: BlockInfo, face: u32) -> u32 {
@@ -608,10 +609,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
 
     let clip = vec4<f32>(ndc, 1.0, 1.0);
-   let world = uniforms.inv_view_proj * clip;
-    let world_pos = world.xyz / world.w;
+    let view = uniforms.inv_projection * clip;
+    let view_dir = normalize(view.xyz / view.w);
+    let world_vec = uniforms.view_to_world * vec4<f32>(view_dir, 0.0);
     let origin = uniforms.eye.xyz;
-    let dir = normalize(world_pos - origin);
+    let dir = normalize(world_vec.xyz);
     let rng_seed = vec3<f32>(f32(gid.x), f32(gid.y), 0.5);
 
     let hit = trace_ray(origin, dir);

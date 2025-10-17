@@ -1,9 +1,9 @@
 use wgpu::util::DeviceExt;
 
-use crate::render::mesh::{self, MeshVertex};
+use crate::render::mesh;
 use crate::render::{FrameContext, Renderer, RendererKind};
 use crate::texture::{AtlasLayout, TextureAtlas};
-use crate::world::{ChunkCoord, World};
+use crate::world::World;
 
 pub struct RasterRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -13,6 +13,8 @@ pub struct RasterRenderer {
     atlas_bind_group: wgpu::BindGroup,
     depth_texture: DepthTexture,
     surface_format: wgpu::TextureFormat,
+    atlas_layout: AtlasLayout,
+    chunk_count: usize,
 }
 
 impl RasterRenderer {
@@ -26,25 +28,8 @@ impl RasterRenderer {
     ) -> Self {
         let surface_format = config.format;
 
-        let mut combined_vertices: Vec<MeshVertex> = Vec::new();
-        let mut combined_indices: Vec<u32> = Vec::new();
-
         let atlas_layout = atlas.layout();
-        populate_chunk_meshes(
-            world,
-            &mut combined_vertices,
-            &mut combined_indices,
-            &atlas_layout,
-        );
-
-        let vertex_data: Vec<Vertex> = combined_vertices
-            .into_iter()
-            .map(|v| Vertex {
-                position: v.position,
-                color: v.color,
-                uv: v.uv,
-            })
-            .collect();
+        let (vertex_data, index_data) = build_world_geometry(world, &atlas_layout);
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Terrain vertex buffer"),
@@ -54,7 +39,7 @@ impl RasterRenderer {
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Terrain index buffer"),
-            contents: bytemuck::cast_slice(&combined_indices),
+            contents: bytemuck::cast_slice(&index_data),
             usage: wgpu::BufferUsages::INDEX,
         });
 
@@ -125,7 +110,7 @@ impl RasterRenderer {
 
         let depth_texture = DepthTexture::create(device, config);
 
-        let index_count = combined_indices.len() as u32;
+        let index_count = index_data.len() as u32;
 
         Self {
             pipeline,
@@ -135,7 +120,35 @@ impl RasterRenderer {
             atlas_bind_group,
             depth_texture,
             surface_format,
+            atlas_layout,
+            chunk_count: world.chunk_count(),
         }
+    }
+}
+
+impl RasterRenderer {
+    fn sync_world(&mut self, device: &wgpu::Device, world: &World) {
+        let current_count = world.chunk_count();
+        if current_count == self.chunk_count {
+            return;
+        }
+
+        let (vertex_data, index_data) = build_world_geometry(world, &self.atlas_layout);
+
+        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Terrain vertex buffer"),
+            contents: bytemuck::cast_slice(&vertex_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Terrain index buffer"),
+            contents: bytemuck::cast_slice(&index_data),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        self.index_count = index_data.len() as u32;
+        self.chunk_count = current_count;
     }
 }
 
@@ -160,6 +173,8 @@ impl Renderer for RasterRenderer {
         output_view: &wgpu::TextureView,
         ctx: &FrameContext,
     ) {
+        self.sync_world(ctx.device, ctx.world);
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("World render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -194,26 +209,22 @@ impl Renderer for RasterRenderer {
     }
 }
 
-fn populate_chunk_meshes(
-    world: &World,
-    vertices: &mut Vec<MeshVertex>,
-    indices: &mut Vec<u32>,
-    atlas_layout: &AtlasLayout,
-) {
-    const CHUNK_RADIUS: i32 = 2;
-    for z in -CHUNK_RADIUS..=CHUNK_RADIUS {
-        for x in -CHUNK_RADIUS..=CHUNK_RADIUS {
-            let coord = ChunkCoord { x, y: 0, z };
-            if world.chunk(coord).is_none() {
-                continue;
-            }
+fn build_world_geometry(world: &World, atlas_layout: &AtlasLayout) -> (Vec<Vertex>, Vec<u32>) {
+    let mut vertices: Vec<Vertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
 
-            let mesh = mesh::build_chunk_mesh(world, coord, atlas_layout);
-            let base_index = vertices.len() as u32;
-            vertices.extend(mesh.vertices.into_iter());
-            indices.extend(mesh.indices.into_iter().map(|i| i + base_index));
-        }
+    for (coord, _) in world.iter_chunks() {
+        let mesh = mesh::build_chunk_mesh(world, *coord, atlas_layout);
+        let base_index = vertices.len() as u32;
+        vertices.extend(mesh.vertices.into_iter().map(|v| Vertex {
+            position: v.position,
+            color: v.color,
+            uv: v.uv,
+        }));
+        indices.extend(mesh.indices.into_iter().map(|i| i + base_index));
     }
+
+    (vertices, indices)
 }
 
 #[repr(C)]

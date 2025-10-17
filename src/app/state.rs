@@ -1,6 +1,6 @@
-use std::time::Instant;
+use std::{fmt::Write, time::Instant};
 
-use glam::Vec3;
+use glam::{IVec3, Vec3};
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, MouseButton, VirtualKeyCode, WindowEvent};
@@ -13,7 +13,10 @@ use crate::input::{CameraController, MouseState};
 use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, Renderer};
 use crate::text::DebugOverlay;
 use crate::texture::TextureAtlas;
-use crate::world::{ChunkCoord, World};
+use crate::world::{chunk_coord_from_block, ChunkCoord, World};
+
+const CHUNK_LOAD_RADIUS: i32 = 4;
+const CHUNK_VERTICAL_RADIUS: i32 = 1;
 
 pub struct AppState {
     window: Window,
@@ -36,6 +39,9 @@ pub struct AppState {
     world: World,
     _block_atlas: TextureAtlas,
     renderer: Box<dyn Renderer>,
+    loaded_chunk_center: ChunkCoord,
+    chunk_radius: i32,
+    chunk_vertical_radius: i32,
 }
 
 impl AppState {
@@ -139,7 +145,17 @@ impl AppState {
             TextureAtlas::load(&device, &queue, atlas_path).expect("Failed to load block atlas");
 
         let mut world = World::new();
-        populate_world_chunks(&mut world);
+        let start_chunk = chunk_coord_from_block(IVec3::new(
+            camera.position.x.floor() as i32,
+            camera.position.y.floor() as i32,
+            camera.position.z.floor() as i32,
+        ));
+        populate_world_chunks(
+            &mut world,
+            start_chunk,
+            CHUNK_LOAD_RADIUS,
+            CHUNK_VERTICAL_RADIUS,
+        );
 
         let renderer: Box<dyn Renderer> = match config.render_method {
             RenderMethodSetting::Rasterized => Box::new(RasterRenderer::new(
@@ -178,6 +194,9 @@ impl AppState {
             world,
             _block_atlas: block_atlas,
             renderer,
+            loaded_chunk_center: start_chunk,
+            chunk_radius: CHUNK_LOAD_RADIUS,
+            chunk_vertical_radius: CHUNK_VERTICAL_RADIUS,
         }
     }
 
@@ -263,12 +282,58 @@ impl AppState {
         let fps = self.fps_counter.update(dt_seconds);
         self.last_frame_time = dt_seconds;
         let pos = self.camera.position;
+        let block_pos = IVec3::new(
+            pos.x.floor() as i32,
+            pos.y.floor() as i32,
+            pos.z.floor() as i32,
+        );
+        let cam_chunk = chunk_coord_from_block(block_pos);
+        if cam_chunk != self.loaded_chunk_center {
+            self.world.ensure_chunks_in_radius(
+                cam_chunk,
+                self.chunk_radius,
+                self.chunk_vertical_radius,
+            );
+            self.loaded_chunk_center = cam_chunk;
+        }
+        let chunk_count = self.world.chunk_count();
+
+        let mut chunk_grid = String::new();
+        let grid_radius = 2;
+        let _ = writeln!(&mut chunk_grid, "Chunk grid (X/Z):");
+        for dz in (-grid_radius..=grid_radius).rev() {
+            chunk_grid.push(' ');
+            for dx in -grid_radius..=grid_radius {
+                let coord = ChunkCoord {
+                    x: cam_chunk.x + dx,
+                    y: cam_chunk.y,
+                    z: cam_chunk.z + dz,
+                };
+                let marker = if dx == 0 && dz == 0 {
+                    'C'
+                } else if self.world.chunk(coord).is_some() {
+                    '#'
+                } else {
+                    '.'
+                };
+                chunk_grid.push(marker);
+                if dx != grid_radius {
+                    chunk_grid.push(' ');
+                }
+            }
+            chunk_grid.push('\n');
+        }
+        let _ = writeln!(&mut chunk_grid, "C=current chunk, #=loaded");
+
         let debug_text = format!(
             r#"
 Renderer: {}
 FPS: {:>5.1}
 Frame: {:>6.2} ms
 POS: {:+5.1} {:+5.1} {:+5.1}
+Chunk: {:+4} {:+4} {:+4}
+Chunks: {:>3}
+{}
 "#,
             self.renderer.kind().as_str(),
             fps,
@@ -276,6 +341,11 @@ POS: {:+5.1} {:+5.1} {:+5.1}
             pos.x,
             pos.y,
             pos.z,
+            cam_chunk.x,
+            cam_chunk.y,
+            cam_chunk.z,
+            chunk_count,
+            chunk_grid.trim_end(),
         );
         let viewport = [self.size.width, self.size.height];
         self.debug_overlay
@@ -349,14 +419,8 @@ POS: {:+5.1} {:+5.1} {:+5.1}
     }
 }
 
-fn populate_world_chunks(world: &mut World) {
-    const CHUNK_RADIUS: i32 = 2;
-    for z in -CHUNK_RADIUS..=CHUNK_RADIUS {
-        for x in -CHUNK_RADIUS..=CHUNK_RADIUS {
-            let coord = ChunkCoord { x, y: 0, z };
-            world.ensure_chunk(coord);
-        }
-    }
+fn populate_world_chunks(world: &mut World, center: ChunkCoord, radius: i32, vertical: i32) {
+    world.ensure_chunks_in_radius(center, radius, vertical);
 }
 
 fn choose_present_mode(
