@@ -37,6 +37,7 @@ var atlas_sampler: sampler;
 const SUN_DIRECTION: vec3<f32> = vec3<f32>(0.3, 0.9, 0.5);
 const PI: f32 = 3.14159265359;
 const MAX_SPECULAR_BOUNCES: u32 = 2u;
+const ROUGH_SPECULAR_LIMIT: f32 = 0.4;
 const DIFFUSE_SAMPLE_WEIGHT: f32 = 0.6;
 
 fn lerp_vec3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
@@ -545,8 +546,10 @@ fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<
     let jitter_seed = random_vec2(seed, 1u);
     let jitter = sample_cosine_hemisphere(material.normal, jitter_seed);
     var ray_dir = normalize(mix(reflect(incoming, material.normal), jitter, material.roughness));
+    let allow_second = material.roughness < ROUGH_SPECULAR_LIMIT;
+    let bounce_limit = select(1u, MAX_SPECULAR_BOUNCES, allow_second);
 
-    for (var bounce = 0u; bounce < MAX_SPECULAR_BOUNCES; bounce = bounce + 1u) {
+    for (var bounce = 0u; bounce < bounce_limit; bounce = bounce + 1u) {
         let hit = trace_ray(ray_origin, ray_dir);
         if hit.block == 0u {
             color += throughput * sky(ray_dir);
@@ -600,7 +603,13 @@ fn trace_diffuse_component(material: MaterialInfo, seed: vec3<u32>) -> vec3<f32>
 fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec3<u32>) -> SurfaceSample {
     let material = gather_material(hit, origin, dir);
     let specular = trace_specular_chain(material, dir, seed);
-    let diffuse = trace_diffuse_component(material, vec3<u32>(seed.x ^ 0x6c8e9cf5u, seed.y + 0x52dce729u, seed.z + 0x7f4a7c15u));
+    var diffuse = vec3<f32>(0.0);
+    if material.diffuse > 0.02 && material.roughness > 0.12 {
+        diffuse = trace_diffuse_component(
+            material,
+            vec3<u32>(seed.x ^ 0x6c8e9cf5u, seed.y + 0x52dce729u, seed.z + 0x7f4a7c15u),
+        );
+    }
     let fog_color = vec3<f32>(0.6, 0.75, 0.95);
     let fog = clamp(hit.travel / 400.0, 0.0, 1.0) * 0.6;
 
