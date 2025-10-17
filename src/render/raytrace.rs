@@ -270,7 +270,7 @@ impl RayTraceRenderer {
             return;
         };
 
-        let voxel_data: Vec<u32> = grid.voxels.iter().copied().map(|b| b as u32).collect();
+        let voxel_data = grid.pack_voxels();
 
         let voxel_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Ray traced voxel buffer"),
@@ -529,6 +529,27 @@ impl VoxelGrid {
             stride_z,
             voxels,
         })
+    }
+
+    fn pack_voxels(&self) -> Vec<u32> {
+        let total = self.voxels.len();
+        let words = (total + 3) / 4;
+        let mut packed = Vec::with_capacity(words);
+
+        for chunk in 0..words {
+            let mut word = 0u32;
+            for lane in 0..4 {
+                let index = chunk * 4 + lane;
+                if index >= total {
+                    break;
+                }
+                let value = self.voxels[index] as u32;
+                word |= value << (lane * 8);
+            }
+            packed.push(word);
+        }
+
+        packed
     }
 }
 

@@ -206,7 +206,10 @@ fn sample_block(coord: vec3<i32>) -> u32 {
     if idx >= voxel_count() {
         return 0u;
     }
-    return voxels[idx];
+    let word_index = idx >> 2u;
+    let lane = (idx & 3u) * 8u;
+    let packed = voxels[word_index];
+    return (packed >> lane) & 0xFFu;
 }
 
 fn intersect_aabb(origin: vec3<f32>, dir: vec3<f32>, min: vec3<f32>, max: vec3<f32>) -> vec2<f32> {
