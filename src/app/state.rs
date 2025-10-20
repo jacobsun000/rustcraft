@@ -17,6 +17,7 @@ use crate::world::{ChunkCoord, World, chunk_coord_from_block};
 
 const CHUNK_LOAD_RADIUS: i32 = 4;
 const CHUNK_VERTICAL_RADIUS: i32 = 1;
+const CHUNK_UNLOAD_MARGIN: i32 = 1;
 
 pub struct AppState {
     window: Window,
@@ -42,6 +43,7 @@ pub struct AppState {
     loaded_chunk_center: ChunkCoord,
     chunk_radius: i32,
     chunk_vertical_radius: i32,
+    chunk_unload_margin: i32,
 }
 
 impl AppState {
@@ -205,6 +207,7 @@ impl AppState {
             loaded_chunk_center: start_chunk,
             chunk_radius: CHUNK_LOAD_RADIUS,
             chunk_vertical_radius: CHUNK_VERTICAL_RADIUS,
+            chunk_unload_margin: CHUNK_UNLOAD_MARGIN,
         }
     }
 
@@ -332,10 +335,14 @@ impl AppState {
                 self.chunk_radius,
                 self.chunk_vertical_radius,
             );
+            let unload_radius = self.chunk_radius + self.chunk_unload_margin;
+            let unload_vertical = self.chunk_vertical_radius + self.chunk_unload_margin;
+            self.world
+                .unload_chunks_outside(cam_chunk, unload_radius, unload_vertical);
             self.loaded_chunk_center = cam_chunk;
         }
         let chunk_count = self.world.chunk_count();
-        let blocks_loaded = self
+        let gpu_blocks = self
             .renderer
             .timings()
             .map(|timings| timings.solid_blocks)
@@ -376,7 +383,7 @@ Frame: {:>6.2} ms
 POS: {:+5.1} {:+5.1} {:+5.1}
 Chunk: {:+4} {:+4} {:+4}
 Chunks: {:>3}
-Blocks: {:>7}
+GPU Blocks: {:>7}
 {}
 "#,
             self.renderer.kind().as_str(),
@@ -389,7 +396,7 @@ Blocks: {:>7}
             cam_chunk.y,
             cam_chunk.z,
             chunk_count,
-            blocks_loaded,
+            gpu_blocks,
             chunk_grid.trim_end(),
         );
         let viewport = [self.size.width, self.size.height];

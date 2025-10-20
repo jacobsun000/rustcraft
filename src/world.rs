@@ -113,6 +113,22 @@ impl World {
         self.chunks.iter()
     }
 
+    pub fn unload_chunks_outside(&mut self, center: ChunkCoord, radius: i32, vertical_radius: i32) {
+        let keys: Vec<ChunkCoord> = self.chunks.keys().copied().collect();
+        for coord in keys {
+            let dx = (coord.x - center.x).abs();
+            let dy = (coord.y - center.y).abs();
+            let dz = (coord.z - center.z).abs();
+            if dx <= radius && dy <= vertical_radius && dz <= radius {
+                continue;
+            }
+
+            if self.chunks.remove(&coord).is_some() {
+                self.recompute_visibility_around(coord);
+            }
+        }
+    }
+
     fn recompute_visibility_around(&mut self, center: ChunkCoord) {
         let offsets = [
             IVec3::new(0, 0, 0),
