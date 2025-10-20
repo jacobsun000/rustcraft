@@ -113,6 +113,18 @@ impl World {
         self.chunks.iter()
     }
 
+    fn sample_block(&self, position: IVec3) -> BlockId {
+        let coord = chunk_coord_from_block(position);
+        if let Some(chunk) = self.chunk(coord) {
+            let local_x = mod_floor(position.x, CHUNK_SIZE as i32) as usize;
+            let local_y = mod_floor(position.y, CHUNK_SIZE as i32) as usize;
+            let local_z = mod_floor(position.z, CHUNK_SIZE as i32) as usize;
+            return chunk.get(local_x, local_y, local_z);
+        }
+
+        procedural_block(position.x, position.y, position.z)
+    }
+
     pub fn unload_chunks_outside(&mut self, center: ChunkCoord, radius: i32, vertical_radius: i32) {
         let keys: Vec<ChunkCoord> = self.chunks.keys().copied().collect();
         for coord in keys {
@@ -195,7 +207,7 @@ impl World {
 
         for offset in NEIGHBORS {
             let neighbor_pos = position + offset;
-            let block = self.block_at(neighbor_pos.x, neighbor_pos.y, neighbor_pos.z);
+            let block = self.sample_block(neighbor_pos);
             if !BlockKind::from_id(block).is_solid() {
                 return true;
             }
@@ -264,17 +276,9 @@ fn generate_chunk(coord: ChunkCoord) -> Chunk {
             let world_z = base_z + z as i32;
             for x in 0..CHUNK_SIZE {
                 let world_x = base_x + x as i32;
-                let height = terrain_height(world_x, world_z);
-
-                if world_y <= height {
-                    let kind = if world_y == height {
-                        BlockKind::Grass
-                    } else if world_y >= height - 3 {
-                        BlockKind::Dirt
-                    } else {
-                        BlockKind::Stone
-                    };
-                    chunk.set(x, y, z, kind.id());
+                let block = procedural_block(world_x, world_y, world_z);
+                if block != BLOCK_AIR {
+                    chunk.set(x, y, z, block);
                 }
             }
         }
@@ -302,6 +306,23 @@ fn terrain_height(x: i32, z: i32) -> i32 {
     let hills = (fx * PI).sin() * 3.0 + (fz * PI * 0.5).cos() * 2.0;
     let base = 6.0;
     (base + hills).round() as i32
+}
+
+fn procedural_block(world_x: i32, world_y: i32, world_z: i32) -> BlockId {
+    let height = terrain_height(world_x, world_z);
+    if world_y > height {
+        return BLOCK_AIR;
+    }
+
+    let kind = if world_y == height {
+        BlockKind::Grass
+    } else if world_y >= height - 3 {
+        BlockKind::Dirt
+    } else {
+        BlockKind::Stone
+    };
+
+    kind.id()
 }
 
 fn div_floor(a: i32, b: i32) -> i32 {
