@@ -566,10 +566,30 @@ impl VoxelGrid {
         let stride_y = size_x;
         let stride_z = stride_y * size_y;
         let mut voxels = vec![BLOCK_AIR; stride_z * size_z];
+        let mut solid_count = 0u32;
+        let mut has_visible_blocks = false;
 
         for (coord, chunk) in world.iter_chunks() {
+            let mask = chunk.visible_mask();
+            let mask_has_visibility = mask.iter().any(|visible| *visible);
             let base = chunk_min_corner(*coord);
             for (index, block) in chunk.blocks().iter().enumerate() {
+                let kind = BlockKind::from_id(*block);
+                if !kind.is_solid() {
+                    continue;
+                }
+
+                let is_visible = if mask_has_visibility {
+                    mask.get(index).copied().unwrap_or(false)
+                } else {
+                    // Fallback: mask not populated yet, keep solid blocks to avoid holes.
+                    true
+                };
+
+                if !is_visible {
+                    continue;
+                }
+
                 let lx = (index % CHUNK_SIZE) as i32;
                 let temp = index / CHUNK_SIZE;
                 let lz = (temp % CHUNK_SIZE) as i32;
@@ -590,15 +610,17 @@ impl VoxelGrid {
 
                 let idx =
                     local.x as usize + local.y as usize * stride_y + local.z as usize * stride_z;
-                voxels[idx] = *block;
+                if voxels[idx] == BLOCK_AIR {
+                    voxels[idx] = *block;
+                    solid_count += 1;
+                    has_visible_blocks = true;
+                }
             }
         }
 
-        let solid_count = voxels
-            .iter()
-            .copied()
-            .filter(|id| BlockKind::from_id(*id).is_solid())
-            .count() as u32;
+        if !has_visible_blocks {
+            return None;
+        }
 
         Some(Self {
             origin: min,

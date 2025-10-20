@@ -1,4 +1,7 @@
-use std::{collections::HashMap, f32::consts::PI};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    f32::consts::PI,
+};
 
 use glam::IVec3;
 
@@ -16,12 +19,14 @@ pub struct ChunkCoord {
 
 pub struct Chunk {
     blocks: Vec<BlockId>,
+    visible_mask: Vec<bool>,
 }
 
 impl Chunk {
     pub fn new() -> Self {
         Self {
             blocks: vec![BLOCK_AIR; CHUNK_VOLUME],
+            visible_mask: vec![false; CHUNK_VOLUME],
         }
     }
 
@@ -37,6 +42,15 @@ impl Chunk {
 
     pub fn blocks(&self) -> &[BlockId] {
         &self.blocks
+    }
+
+    pub fn visible_mask(&self) -> &[bool] {
+        &self.visible_mask
+    }
+
+    pub fn set_visible_mask(&mut self, mask: Vec<bool>) {
+        debug_assert_eq!(mask.len(), CHUNK_VOLUME);
+        self.visible_mask = mask;
     }
 
     fn index(x: usize, y: usize, z: usize) -> usize {
@@ -56,9 +70,19 @@ impl World {
     }
 
     pub fn ensure_chunk(&mut self, coord: ChunkCoord) {
-        self.chunks
-            .entry(coord)
-            .or_insert_with(|| generate_chunk(coord));
+        let mut inserted = false;
+        match self.chunks.entry(coord) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(vacant) => {
+                let chunk = generate_chunk(coord);
+                vacant.insert(chunk);
+                inserted = true;
+            }
+        }
+
+        if inserted {
+            self.recompute_visibility_around(coord);
+        }
     }
 
     pub fn chunk(&self, coord: ChunkCoord) -> Option<&Chunk> {
@@ -87,6 +111,81 @@ impl World {
 
     pub fn iter_chunks(&self) -> impl Iterator<Item = (&ChunkCoord, &Chunk)> {
         self.chunks.iter()
+    }
+
+    fn recompute_visibility_around(&mut self, center: ChunkCoord) {
+        let offsets = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 0, 0),
+            IVec3::new(-1, 0, 0),
+            IVec3::new(0, 1, 0),
+            IVec3::new(0, -1, 0),
+            IVec3::new(0, 0, 1),
+            IVec3::new(0, 0, -1),
+        ];
+
+        for offset in offsets {
+            let neighbor_coord = ChunkCoord {
+                x: center.x + offset.x,
+                y: center.y + offset.y,
+                z: center.z + offset.z,
+            };
+
+            if self.chunks.contains_key(&neighbor_coord) {
+                if let Some(mask) = self.compute_visibility_mask(neighbor_coord) {
+                    if let Some(chunk) = self.chunks.get_mut(&neighbor_coord) {
+                        chunk.set_visible_mask(mask);
+                    }
+                }
+            }
+        }
+    }
+
+    fn compute_visibility_mask(&self, coord: ChunkCoord) -> Option<Vec<bool>> {
+        let chunk = self.chunk(coord)?;
+        let base = chunk_min_corner(coord);
+        let mut mask = vec![false; CHUNK_VOLUME];
+
+        for y in 0..CHUNK_SIZE {
+            for z in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let index = Chunk::index(x, y, z);
+                    let block = chunk.blocks()[index];
+                    let kind = BlockKind::from_id(block);
+                    if !kind.is_solid() {
+                        continue;
+                    }
+
+                    let world_pos = base + IVec3::new(x as i32, y as i32, z as i32);
+                    if self.block_has_exposed_face(world_pos) {
+                        mask[index] = true;
+                    }
+                }
+            }
+        }
+
+        Some(mask)
+    }
+
+    fn block_has_exposed_face(&self, position: IVec3) -> bool {
+        const NEIGHBORS: [IVec3; 6] = [
+            IVec3::new(1, 0, 0),
+            IVec3::new(-1, 0, 0),
+            IVec3::new(0, 1, 0),
+            IVec3::new(0, -1, 0),
+            IVec3::new(0, 0, 1),
+            IVec3::new(0, 0, -1),
+        ];
+
+        for offset in NEIGHBORS {
+            let neighbor_pos = position + offset;
+            let block = self.block_at(neighbor_pos.x, neighbor_pos.y, neighbor_pos.z);
+            if !BlockKind::from_id(block).is_solid() {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
