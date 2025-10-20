@@ -404,10 +404,10 @@ impl Renderer for RayTraceRenderer {
         let mut timings = RenderTimings::default();
 
         self.gpu_sample = None;
-        if let Some(ts) = self.timestamp_query.as_mut() {
-            if let Some(sample) = ts.begin_frame(ctx.device) {
-                self.gpu_sample = Some(sample);
-            }
+        if let Some(ts) = self.timestamp_query.as_mut()
+            && let Some(sample) = ts.begin_frame(ctx.device)
+        {
+            self.gpu_sample = Some(sample);
         }
 
         let prep_start = Instant::now();
@@ -603,7 +603,7 @@ impl VoxelGrid {
 
     fn pack_voxels(&self) -> Vec<u32> {
         let total = self.voxels.len();
-        let words = (total + 3) / 4;
+        let words = total.div_ceil(4);
         let mut packed = Vec::with_capacity(words);
 
         for chunk in 0..words {
