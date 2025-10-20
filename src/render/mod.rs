@@ -18,6 +18,7 @@ pub struct RenderTimings {
     pub gpu_compute_ms: f32,
     pub gpu_present_ms: f32,
     pub voxels: u32,
+    pub solid_blocks: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
-use crate::block::{self, BLOCK_AIR, BlockId};
+use crate::block::{self, BLOCK_AIR, BlockId, BlockKind};
 use crate::render::{FrameContext, RenderTimings, Renderer, RendererKind};
 use crate::texture::{AtlasLayout, TextureAtlas, TileId};
 use crate::world::{CHUNK_SIZE, World, chunk_min_corner};
@@ -424,6 +424,7 @@ impl Renderer for RayTraceRenderer {
         };
 
         timings.voxels = scene.grid.voxels.len() as u32;
+        timings.solid_blocks = scene.grid.solid_count;
 
         let uniform_start = Instant::now();
         self.update_uniforms(ctx.queue, ctx, &scene.grid);
@@ -537,6 +538,7 @@ struct VoxelGrid {
     stride_y: usize,
     stride_z: usize,
     voxels: Vec<BlockId>,
+    solid_count: u32,
 }
 
 impl VoxelGrid {
@@ -592,12 +594,19 @@ impl VoxelGrid {
             }
         }
 
+        let solid_count = voxels
+            .iter()
+            .copied()
+            .filter(|id| BlockKind::from_id(*id).is_solid())
+            .count() as u32;
+
         Some(Self {
             origin: min,
             size,
             stride_y,
             stride_z,
             voxels,
+            solid_count,
         })
     }
 

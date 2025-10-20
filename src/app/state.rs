@@ -193,7 +193,7 @@ impl AppState {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            camera_controller: CameraController::new(6.0, 90.0, config.key_bindings.clone()),
+            camera_controller: CameraController::new(10.0, 90.0, config.key_bindings.clone()),
             mouse_state: MouseState::new(config.mouse_sensitivity, config.max_fps),
             debug_overlay,
             fps_counter: FpsCounter::default(),
@@ -335,6 +335,11 @@ impl AppState {
             self.loaded_chunk_center = cam_chunk;
         }
         let chunk_count = self.world.chunk_count();
+        let blocks_loaded = self
+            .renderer
+            .timings()
+            .map(|timings| timings.solid_blocks)
+            .unwrap_or(0);
 
         let mut chunk_grid = String::new();
         let grid_radius = 2;
@@ -371,6 +376,7 @@ Frame: {:>6.2} ms
 POS: {:+5.1} {:+5.1} {:+5.1}
 Chunk: {:+4} {:+4} {:+4}
 Chunks: {:>3}
+Blocks: {:>7}
 {}
 "#,
             self.renderer.kind().as_str(),
@@ -383,6 +389,7 @@ Chunks: {:>3}
             cam_chunk.y,
             cam_chunk.z,
             chunk_count,
+            blocks_loaded,
             chunk_grid.trim_end(),
         );
         let viewport = [self.size.width, self.size.height];
