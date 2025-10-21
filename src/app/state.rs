@@ -3,14 +3,19 @@ use std::{fmt::Write, time::Instant};
 use glam::{IVec3, Vec3};
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, ElementState, MouseButton, VirtualKeyCode, WindowEvent};
+use winit::event::{
+    DeviceEvent, ElementState, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
+};
 use winit::window::{CursorGrabMode, Window};
 
+use crate::block::{BLOCK_AIR, BlockKind};
 use crate::camera::{Camera, CameraUniform, Projection};
 use crate::config::{self, AppConfig, RenderMethodSetting};
 use crate::fps::FpsCounter;
+use crate::hotbar::Hotbar;
 use crate::input::{CameraController, MouseState};
 use crate::physics::{MovementMode, PlayerPhysics};
+use crate::raycast::pick_block;
 use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, RenderTimings, Renderer};
 use crate::text::DebugOverlay;
 use crate::texture::TextureAtlas;
@@ -19,6 +24,7 @@ use crate::world::{ChunkCoord, World, chunk_coord_from_block};
 const CHUNK_LOAD_RADIUS: i32 = 4;
 const CHUNK_VERTICAL_RADIUS: i32 = 1;
 const CHUNK_UNLOAD_MARGIN: i32 = 1;
+const INTERACTION_DISTANCE: f32 = 6.0;
 
 pub struct AppState {
     window: Window,
@@ -46,6 +52,10 @@ pub struct AppState {
     chunk_vertical_radius: i32,
     chunk_unload_margin: i32,
     player: PlayerPhysics,
+    hotbar: Hotbar,
+    pending_break: bool,
+    pending_place: bool,
+    pending_pick: bool,
 }
 
 impl AppState {
@@ -212,6 +222,10 @@ impl AppState {
             chunk_vertical_radius: CHUNK_VERTICAL_RADIUS,
             chunk_unload_margin: CHUNK_UNLOAD_MARGIN,
             player,
+            hotbar: Hotbar::new(),
+            pending_break: false,
+            pending_place: false,
+            pending_pick: false,
         }
     }
 
@@ -274,6 +288,12 @@ impl AppState {
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
                     let is_pressed = input.state == ElementState::Pressed;
+                    if is_pressed {
+                        if let Some(index) = Self::hotbar_digit_index(key) {
+                            self.hotbar.select_index(index);
+                            return true;
+                        }
+                    }
                     if is_pressed && key == VirtualKeyCode::Escape && self.mouse_state.captured {
                         self.set_mouse_capture(false);
                         return true;
@@ -289,10 +309,62 @@ impl AppState {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if *button == MouseButton::Left && *state == ElementState::Pressed {
-                    if !self.mouse_state.captured {
-                        self.set_mouse_capture(true);
+                let pressed = *state == ElementState::Pressed;
+                match button {
+                    MouseButton::Left => {
+                        if pressed {
+                            if !self.mouse_state.captured {
+                                self.set_mouse_capture(true);
+                                return true;
+                            }
+                            self.pending_break = true;
+                            true
+                        } else {
+                            false
+                        }
                     }
+                    MouseButton::Right => {
+                        if pressed {
+                            if !self.mouse_state.captured {
+                                self.set_mouse_capture(true);
+                                return true;
+                            }
+                            self.pending_place = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MouseButton::Middle => {
+                        if pressed {
+                            if !self.mouse_state.captured {
+                                self.set_mouse_capture(true);
+                                return true;
+                            }
+                            self.pending_pick = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y,
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        let y = pos.y as f32;
+                        if y.abs() < f32::EPSILON {
+                            0.0
+                        } else {
+                            y.signum()
+                        }
+                    }
+                };
+                if amount.abs() > f32::EPSILON {
+                    let offset = if amount > 0.0 { -1 } else { 1 };
+                    self.hotbar.cycle(offset as isize);
                     true
                 } else {
                     false
@@ -354,6 +426,7 @@ impl AppState {
                 .unload_chunks_outside(cam_chunk, unload_radius, unload_vertical);
             self.loaded_chunk_center = cam_chunk;
         }
+        self.process_interactions();
         let chunk_count = self.world.chunk_count();
         let gpu_blocks = self
             .renderer
@@ -393,6 +466,9 @@ impl AppState {
             MovementMode::Walk => "Walk",
         };
 
+        let selected_block = self.hotbar.selected();
+        let selected_name = selected_block.display_name();
+        let hotbar_line = self.hotbar.formatted_slots();
         let debug_text = format!(
             r#"
 Renderer: {}
@@ -403,6 +479,8 @@ POS: {:+5.1} {:+5.1} {:+5.1}
 Chunk: {:+4} {:+4} {:+4}
 Chunks: {:>3}
 GPU Blocks: {:>7}
+Selected: {}
+Hotbar: {}
 {}
 "#,
             self.renderer.kind().as_str(),
@@ -417,6 +495,8 @@ GPU Blocks: {:>7}
             cam_chunk.z,
             chunk_count,
             gpu_blocks,
+            selected_name,
+            hotbar_line,
             chunk_grid.trim_end(),
         );
         let viewport = [self.size.width, self.size.height];
@@ -465,6 +545,80 @@ GPU Blocks: {:>7}
     pub fn sleep_if_needed(&self) {
         let elapsed = self.last_frame.elapsed().as_secs_f32();
         self.mouse_state.frame_sleep(elapsed);
+    }
+
+    fn process_interactions(&mut self) {
+        if !(self.pending_break || self.pending_place || self.pending_pick) {
+            return;
+        }
+
+        let forward = self.camera.forward();
+        let hit = pick_block(
+            &self.world,
+            self.camera.position,
+            forward,
+            INTERACTION_DISTANCE,
+        );
+
+        if self.pending_pick {
+            if let Some(hit) = hit.as_ref() {
+                let kind =
+                    BlockKind::from_id(self.world.block_at(hit.block.x, hit.block.y, hit.block.z));
+                if kind != BlockKind::Air {
+                    let _ = self.hotbar.select_block(kind);
+                }
+            }
+        }
+
+        if self.pending_break {
+            if let Some(hit) = hit.as_ref() {
+                let _ = self.world.set_block(hit.block, BLOCK_AIR);
+            }
+        }
+
+        if self.pending_place {
+            if let Some(hit) = hit.as_ref() {
+                let target = hit.placement_position();
+                self.ensure_chunk_for_block(target);
+                if self.can_place_block(target) {
+                    let block_id = self.hotbar.selected().id();
+                    let _ = self.world.set_block(target, block_id);
+                }
+            }
+        }
+
+        self.pending_break = false;
+        self.pending_place = false;
+        self.pending_pick = false;
+    }
+
+    fn ensure_chunk_for_block(&mut self, position: IVec3) {
+        let chunk_coord = chunk_coord_from_block(position);
+        if self.world.chunk(chunk_coord).is_none() {
+            self.world.ensure_chunk(chunk_coord);
+        }
+    }
+
+    fn can_place_block(&self, position: IVec3) -> bool {
+        if BlockKind::from_id(self.world.block_at(position.x, position.y, position.z)).is_solid() {
+            return false;
+        }
+        !self.player.overlaps_block(position)
+    }
+
+    fn hotbar_digit_index(key: VirtualKeyCode) -> Option<usize> {
+        match key {
+            VirtualKeyCode::Key1 => Some(0),
+            VirtualKeyCode::Key2 => Some(1),
+            VirtualKeyCode::Key3 => Some(2),
+            VirtualKeyCode::Key4 => Some(3),
+            VirtualKeyCode::Key5 => Some(4),
+            VirtualKeyCode::Key6 => Some(5),
+            VirtualKeyCode::Key7 => Some(6),
+            VirtualKeyCode::Key8 => Some(7),
+            VirtualKeyCode::Key9 => Some(8),
+            _ => None,
+        }
     }
 
     fn set_mouse_capture(&mut self, capture: bool) {

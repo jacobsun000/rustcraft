@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{IVec3, Vec3};
 
 use crate::block::BlockKind;
 use crate::input::MovementInput;
@@ -77,6 +77,28 @@ impl PlayerPhysics {
     pub fn toggle_mode(&mut self) {
         let new_mode = self.mode.toggle();
         self.set_mode(new_mode);
+    }
+
+    pub fn overlaps_block(&self, block: IVec3) -> bool {
+        let block_min = block.as_vec3();
+        let block_max = block_min + Vec3::ONE;
+        let player_min = Vec3::new(
+            self.position.x - PLAYER_HALF_WIDTH,
+            self.position.y,
+            self.position.z - PLAYER_HALF_WIDTH,
+        );
+        let player_max = Vec3::new(
+            self.position.x + PLAYER_HALF_WIDTH,
+            self.position.y + PLAYER_HEIGHT,
+            self.position.z + PLAYER_HALF_WIDTH,
+        );
+
+        !(player_max.x <= block_min.x
+            || player_min.x >= block_max.x
+            || player_max.y <= block_min.y
+            || player_min.y >= block_max.y
+            || player_max.z <= block_min.z
+            || player_min.z >= block_max.z)
     }
 
     pub fn update(&mut self, world: &World, dt: f32, movement: &MovementInput) {

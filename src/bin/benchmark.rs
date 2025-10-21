@@ -10,10 +10,14 @@ mod camera;
 mod config;
 #[path = "../fps.rs"]
 mod fps;
+#[path = "../hotbar.rs"]
+mod hotbar;
 #[path = "../input.rs"]
 mod input;
 #[path = "../physics.rs"]
 mod physics;
+#[path = "../raycast.rs"]
+mod raycast;
 #[path = "../render/mod.rs"]
 mod render;
 #[path = "../text.rs"]

@@ -15,6 +15,7 @@ pub struct RasterRenderer {
     surface_format: wgpu::TextureFormat,
     atlas_layout: AtlasLayout,
     chunk_count: usize,
+    world_version: u64,
 }
 
 impl RasterRenderer {
@@ -122,6 +123,7 @@ impl RasterRenderer {
             surface_format,
             atlas_layout,
             chunk_count: world.chunk_count(),
+            world_version: world.version(),
         }
     }
 }
@@ -129,7 +131,8 @@ impl RasterRenderer {
 impl RasterRenderer {
     fn sync_world(&mut self, device: &wgpu::Device, world: &World) {
         let current_count = world.chunk_count();
-        if current_count == self.chunk_count {
+        let version = world.version();
+        if current_count == self.chunk_count && version == self.world_version {
             return;
         }
 
@@ -149,6 +152,7 @@ impl RasterRenderer {
 
         self.index_count = index_data.len() as u32;
         self.chunk_count = current_count;
+        self.world_version = version;
     }
 }
 

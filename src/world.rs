@@ -61,12 +61,14 @@ impl Chunk {
 
 pub struct World {
     chunks: HashMap<ChunkCoord, Chunk>,
+    version: u64,
 }
 
 impl World {
     pub fn new() -> Self {
         Self {
             chunks: HashMap::new(),
+            version: 0,
         }
     }
 
@@ -107,6 +109,7 @@ impl World {
                 solid_blocks,
                 visible_blocks
             );
+            self.bump_version();
         }
     }
 
@@ -138,8 +141,13 @@ impl World {
         self.chunks.iter()
     }
 
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     pub fn unload_chunks_outside(&mut self, center: ChunkCoord, radius: i32, vertical_radius: i32) {
         let keys: Vec<ChunkCoord> = self.chunks.keys().copied().collect();
+        let mut changed = false;
         for coord in keys {
             let dx = (coord.x - center.x).abs();
             let dy = (coord.y - center.y).abs();
@@ -150,8 +158,32 @@ impl World {
 
             if self.chunks.remove(&coord).is_some() {
                 self.recompute_visibility_around(coord);
+                changed = true;
             }
         }
+        if changed {
+            self.bump_version();
+        }
+    }
+
+    pub fn set_block(&mut self, world_pos: IVec3, block: BlockId) -> bool {
+        let chunk_coord = chunk_coord_from_block(world_pos);
+        let local_x = mod_floor(world_pos.x, CHUNK_SIZE as i32) as usize;
+        let local_y = mod_floor(world_pos.y, CHUNK_SIZE as i32) as usize;
+        let local_z = mod_floor(world_pos.z, CHUNK_SIZE as i32) as usize;
+        {
+            let Some(chunk) = self.chunks.get_mut(&chunk_coord) else {
+                return false;
+            };
+            let current = chunk.get(local_x, local_y, local_z);
+            if current == block {
+                return false;
+            }
+            chunk.set(local_x, local_y, local_z, block);
+        }
+        self.recompute_visibility_around(chunk_coord);
+        self.bump_version();
+        true
     }
 
     fn recompute_visibility_around(&mut self, center: ChunkCoord) {
@@ -404,6 +436,10 @@ impl World {
                 }
             }
         }
+    }
+
+    fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 }
 

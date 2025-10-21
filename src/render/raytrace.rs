@@ -263,8 +263,9 @@ impl RayTraceRenderer {
 
     fn ensure_scene(&mut self, device: &wgpu::Device, world: &World) {
         let chunk_count = world.chunk_count();
+        let world_version = world.version();
         let needs_rebuild = match &self.scene {
-            Some(scene) => scene.chunk_count != chunk_count,
+            Some(scene) => scene.chunk_count != chunk_count || scene.world_version != world_version,
             None => true,
         };
 
@@ -288,7 +289,11 @@ impl RayTraceRenderer {
         });
 
         self.voxel_buffer = Some(voxel_buffer);
-        self.scene = Some(VoxelScene { grid, chunk_count });
+        self.scene = Some(VoxelScene {
+            grid,
+            chunk_count,
+            world_version,
+        });
         self.recreate_compute_bind_group(device);
     }
 
@@ -524,6 +529,7 @@ struct ScreenTexture {
 struct VoxelScene {
     grid: VoxelGrid,
     chunk_count: usize,
+    world_version: u64,
 }
 
 #[derive(Clone, Copy, Default)]
