@@ -172,12 +172,11 @@ impl World {
                 z: center.z + offset.z,
             };
 
-            if self.chunks.contains_key(&neighbor_coord) {
-                if let Some(mask) = self.compute_visibility_mask(neighbor_coord) {
-                    if let Some(chunk) = self.chunks.get_mut(&neighbor_coord) {
-                        chunk.set_visible_mask(mask);
-                    }
-                }
+            if self.chunks.contains_key(&neighbor_coord)
+                && let Some(mask) = self.compute_visibility_mask(neighbor_coord)
+                && let Some(chunk) = self.chunks.get_mut(&neighbor_coord)
+            {
+                chunk.set_visible_mask(mask);
             }
         }
     }
