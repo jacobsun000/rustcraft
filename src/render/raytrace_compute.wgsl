@@ -22,6 +22,10 @@ struct BlockInfo {
     specular: f32,
     diffuse: f32,
     roughness: f32,
+    metallic: f32,
+    transmission: f32,
+    ior: f32,
+    transmission_tint: f32,
 };
 
 @group(0) @binding(3)
@@ -38,6 +42,7 @@ const PI: f32 = 3.14159265359;
 const MAX_SPECULAR_BOUNCES: u32 = 2u;
 const ROUGH_SPECULAR_LIMIT: f32 = 0.4;
 const DIFFUSE_SAMPLE_WEIGHT: f32 = 0.6;
+const MAX_TRANSMISSION_BOUNCES: u32 = 2u;
 
 fn lerp_vec3(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a + t * (b - a);
@@ -333,6 +338,22 @@ fn compute_step_delta(direction: f32, step: i32) -> f32 {
     return abs(1.0 / direction);
 }
 
+fn refract_snell(incident: vec3<f32>, normal: vec3<f32>, eta_i: f32, eta_t: f32) -> vec3<f32> {
+    var n = normal;
+    var cos_i = dot(incident, n);
+    var eta = eta_i / eta_t;
+    if cos_i > 0.0 {
+        n = -n;
+        cos_i = dot(incident, n);
+    }
+    cos_i = clamp(cos_i, -1.0, 1.0);
+    let k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+    if k < 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return eta * incident - (eta * cos_i + sqrt(k)) * n;
+}
+
 fn sky(dir: vec3<f32>) -> vec3<f32> {
     let t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
     let horizon = vec3<f32>(0.4, 0.5, 0.7);
@@ -351,6 +372,7 @@ struct SurfaceSample {
     direct: vec3<f32>,
     specular: vec3<f32>,
     diffuse: vec3<f32>,
+    transmission: vec3<f32>,
     fog_color: vec3<f32>,
     fog: f32,
 }
@@ -363,6 +385,11 @@ struct MaterialInfo {
     specular: f32,
     diffuse: f32,
     roughness: f32,
+    metallic: f32,
+    transmission: f32,
+    ior: f32,
+    transmission_tint: f32,
+    voxel: vec3<i32>,
 }
 
 fn miss_hit() -> HitResult {
@@ -507,12 +534,19 @@ fn gather_material(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> Materia
     let uv = face_uv(hit.normal, local);
     let albedo = sample_tile(tile, uv);
 
+    let metallic = saturate(info.metallic);
+    let transmission = saturate(info.transmission);
+    let tint_mix = saturate(info.transmission_tint);
+    let ior = max(info.ior, 1.0);
+
     let light = max(dot(hit.normal, SUN_DIRECTION), 0.0);
-    let diffuse_component = albedo * light * saturate(info.diffuse);
+    let diffuse_base = albedo * light * saturate(info.diffuse);
+    let diffuse_component = diffuse_base * (1.0 - metallic) * (1.0 - transmission);
     let emission = albedo * info.luminance * 0.12;
     let direct = diffuse_component + emission;
-    let specular = saturate(info.specular);
-    let diffuse_strength = saturate(info.diffuse);
+    let base_specular = saturate(info.specular);
+    let specular = base_specular * (1.0 - metallic) + 0.95 * metallic;
+    let diffuse_strength = saturate(info.diffuse) * (1.0 - metallic) * (1.0 - transmission);
     let roughness = clamp(info.roughness, 0.02, 1.0);
 
     return MaterialInfo(
@@ -523,18 +557,25 @@ fn gather_material(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>) -> Materia
         specular,
         diffuse_strength,
         roughness,
+        metallic,
+        transmission,
+        ior,
+        tint_mix,
+        hit.voxel,
     );
 }
 
 fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<u32>) -> vec3<f32> {
     let cos_theta = saturate(dot(material.normal, -incoming));
-    let base_reflect = schlick(material.specular, cos_theta);
+    let base_f0 = material.specular * (1.0 - material.metallic) + 0.96 * material.metallic;
+    let base_reflect = schlick(base_f0, cos_theta);
     if base_reflect < 0.005 {
         return vec3<f32>(0.0);
     }
 
     var color = vec3<f32>(0.0);
-    var throughput = vec3<f32>(base_reflect);
+    let base_tint = lerp_vec3(vec3<f32>(1.0), material.albedo, material.metallic);
+    var throughput = base_tint * base_reflect * (1.0 - material.transmission);
     var ray_origin = material.position + material.normal * 1e-3;
     let jitter_seed = random_vec2(seed, 1u);
     let jitter = sample_cosine_hemisphere(material.normal, jitter_seed);
@@ -553,9 +594,11 @@ fn trace_specular_chain(material: MaterialInfo, incoming: vec3<f32>, seed: vec3<
         color += throughput * sample_material.direct;
 
         let next_cos = saturate(dot(sample_material.normal, -ray_dir));
-        let fresnel = schlick(sample_material.specular, next_cos);
-        let attenuation =
-            mix(vec3<f32>(1.0), sample_material.albedo, 0.12) * fresnel * (1.0 - sample_material.roughness * 0.35);
+        let sample_f0 =
+            sample_material.specular * (1.0 - sample_material.metallic) + 0.96 * sample_material.metallic;
+        let fresnel = schlick(sample_f0, next_cos);
+        let tint = lerp_vec3(vec3<f32>(1.0), sample_material.albedo, sample_material.metallic);
+        let attenuation = tint * fresnel * (1.0 - sample_material.roughness * 0.35) * (1.0 - sample_material.transmission * 0.5);
 
         throughput *= attenuation;
         if max(max(throughput.x, throughput.y), throughput.z) < 0.01 {
@@ -593,6 +636,61 @@ fn trace_diffuse_component(material: MaterialInfo, seed: vec3<u32>) -> vec3<f32>
     return indirect;
 }
 
+fn trace_transmission(material: MaterialInfo, dir: vec3<f32>, seed: vec3<u32>) -> vec3<f32> {
+    if material.transmission < 0.01 {
+        return vec3<f32>(0.0);
+    }
+
+    let inside_dir = refract_snell(dir, material.normal, 1.0, material.ior);
+    if length(inside_dir) < 1e-4 {
+        return vec3<f32>(0.0);
+    }
+
+    let block_min = vec3<f32>(
+        f32(material.voxel.x),
+        f32(material.voxel.y),
+        f32(material.voxel.z),
+    );
+    let block_max = block_min + vec3<f32>(1.0);
+    let entry = material.position + inside_dir * 1e-4;
+    let bounds = intersect_aabb(entry, inside_dir, block_min, block_max);
+    if bounds.x > bounds.y {
+        return vec3<f32>(0.0);
+    }
+    let exit_t = bounds.y;
+    if exit_t <= 1e-4 {
+        return vec3<f32>(0.0);
+    }
+    let exit_point = entry + inside_dir * (exit_t + 1e-4);
+    let exit_normal = determine_entry_normal(exit_point, block_min, block_max, inside_dir);
+    let exit_dir = refract_snell(inside_dir, exit_normal, material.ior, 1.0);
+    if length(exit_dir) < 1e-4 {
+        return vec3<f32>(0.0);
+    }
+
+    let tint = lerp_vec3(vec3<f32>(1.0), material.albedo, material.transmission_tint);
+    let throughput = tint * material.transmission;
+    let next_origin = exit_point + exit_dir * 1e-3;
+    let next_hit = trace_ray(next_origin, exit_dir);
+    if next_hit.block == 0u {
+        return throughput * sky(exit_dir);
+    }
+
+    let bounced = gather_material(next_hit, next_origin, exit_dir);
+    var color = throughput * bounced.direct;
+
+    if bounced.diffuse > 0.02 && bounced.roughness > 0.12 {
+        let diffuse_seed =
+            vec3<u32>(seed.x ^ 0x6c8e9cf5u, seed.y + 0x52dce729u, seed.z + 0x7f4a7c15u);
+        color += throughput * trace_diffuse_component(bounced, diffuse_seed);
+    }
+
+    let spec_seed = vec3<u32>(seed.x + 0x12345u, seed.y ^ 0x9e3779b9u, seed.z + 0x51ed1099u);
+    color += throughput * trace_specular_chain(bounced, exit_dir, spec_seed);
+
+    return color;
+}
+
 fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec3<u32>) -> SurfaceSample {
     let material = gather_material(hit, origin, dir);
     let specular = trace_specular_chain(material, dir, seed);
@@ -603,10 +701,15 @@ fn evaluate_surface(hit: HitResult, origin: vec3<f32>, dir: vec3<f32>, seed: vec
             vec3<u32>(seed.x ^ 0x6c8e9cf5u, seed.y + 0x52dce729u, seed.z + 0x7f4a7c15u),
         );
     }
+    let transmission = trace_transmission(
+        material,
+        dir,
+        vec3<u32>(seed.x + 0xb5297a4du, seed.y ^ 0x68e31da4u, seed.z + 0x1b56c4f5u),
+    );
     let fog_color = vec3<f32>(0.6, 0.75, 0.95);
     let fog = clamp(hit.travel / 400.0, 0.0, 1.0) * 0.6;
 
-    return SurfaceSample(material.direct, specular, diffuse, fog_color, fog);
+    return SurfaceSample(material.direct, specular, diffuse, transmission, fog_color, fog);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -635,7 +738,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var color = sky(dir);
     if hit.block != 0u {
         let sample = evaluate_surface(hit, origin, dir, rng_seed);
-        let shaded = sample.direct + sample.specular + sample.diffuse;
+        let shaded = sample.direct + sample.specular + sample.diffuse + sample.transmission;
         color = lerp_vec3(shaded, sample.fog_color, sample.fog);
     }
 

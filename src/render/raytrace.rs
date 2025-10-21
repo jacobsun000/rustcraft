@@ -662,6 +662,10 @@ struct GpuBlockInfo {
     specular: f32,
     diffuse: f32,
     roughness: f32,
+    metallic: f32,
+    transmission: f32,
+    ior: f32,
+    transmission_tint: f32,
 }
 
 fn build_block_metadata() -> Vec<GpuBlockInfo> {
@@ -678,6 +682,10 @@ fn build_block_metadata() -> Vec<GpuBlockInfo> {
             specular: definition.specular,
             diffuse: definition.diffuse,
             roughness: definition.roughness,
+            metallic: definition.metallic,
+            transmission: definition.transmission,
+            ior: definition.ior,
+            transmission_tint: definition.transmission_tint,
         });
     }
     entries

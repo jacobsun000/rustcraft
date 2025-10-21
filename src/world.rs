@@ -436,6 +436,12 @@ fn generate_chunk(coord: ChunkCoord) -> Chunk {
         if lamp_world_y >= base_y && lamp_world_y < base_y + CHUNK_SIZE as i32 {
             let lamp_y = (lamp_world_y - base_y) as usize;
             chunk.set(lamp_x, lamp_y, lamp_z, BlockKind::Lamp.id());
+            if lamp_y + 1 < CHUNK_SIZE {
+                chunk.set(lamp_x, lamp_y + 1, lamp_z, BlockKind::Glass.id());
+            }
+            if lamp_y + 2 < CHUNK_SIZE {
+                chunk.set(lamp_x, lamp_y + 2, lamp_z, BlockKind::Metal.id());
+            }
         }
     }
 
