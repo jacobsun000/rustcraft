@@ -99,7 +99,7 @@ impl World {
                 .map(|chunk| chunk.visible_mask().iter().filter(|&&v| v).count())
                 .unwrap_or(0);
 
-            log::debug!(
+            log::info!(
                 "Loaded chunk {:?}: gen {:.2} ms, vis {:.2} ms, solid {}, visible {}",
                 coord,
                 generation_ms,
@@ -136,18 +136,6 @@ impl World {
 
     pub fn iter_chunks(&self) -> impl Iterator<Item = (&ChunkCoord, &Chunk)> {
         self.chunks.iter()
-    }
-
-    fn sample_block(&self, position: IVec3) -> BlockId {
-        let coord = chunk_coord_from_block(position);
-        if let Some(chunk) = self.chunk(coord) {
-            let local_x = mod_floor(position.x, CHUNK_SIZE as i32) as usize;
-            let local_y = mod_floor(position.y, CHUNK_SIZE as i32) as usize;
-            let local_z = mod_floor(position.z, CHUNK_SIZE as i32) as usize;
-            return chunk.get(local_x, local_y, local_z);
-        }
-
-        procedural_block(position.x, position.y, position.z)
     }
 
     pub fn unload_chunks_outside(&mut self, center: ChunkCoord, radius: i32, vertical_radius: i32) {
@@ -197,20 +185,152 @@ impl World {
     fn compute_visibility_mask(&self, coord: ChunkCoord) -> Option<Vec<bool>> {
         let chunk = self.chunk(coord)?;
         let base = chunk_min_corner(coord);
+        let blocks = chunk.blocks();
+        let neighbor_pos = [
+            ChunkCoord {
+                x: coord.x + 1,
+                ..coord
+            },
+            ChunkCoord {
+                x: coord.x - 1,
+                ..coord
+            },
+            ChunkCoord {
+                y: coord.y + 1,
+                ..coord
+            },
+            ChunkCoord {
+                y: coord.y - 1,
+                ..coord
+            },
+            ChunkCoord {
+                z: coord.z + 1,
+                ..coord
+            },
+            ChunkCoord {
+                z: coord.z - 1,
+                ..coord
+            },
+        ];
+
+        let neighbor_blocks: [Option<&[BlockId]>; 6] = [
+            self.chunk(neighbor_pos[0]).map(|c| c.blocks()),
+            self.chunk(neighbor_pos[1]).map(|c| c.blocks()),
+            self.chunk(neighbor_pos[2]).map(|c| c.blocks()),
+            self.chunk(neighbor_pos[3]).map(|c| c.blocks()),
+            self.chunk(neighbor_pos[4]).map(|c| c.blocks()),
+            self.chunk(neighbor_pos[5]).map(|c| c.blocks()),
+        ];
+
         let mut mask = vec![false; CHUNK_VOLUME];
 
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
                 for x in 0..CHUNK_SIZE {
                     let index = Chunk::index(x, y, z);
-                    let block = chunk.blocks()[index];
-                    let kind = BlockKind::from_id(block);
-                    if !kind.is_solid() {
+                    let block = blocks[index];
+                    if !BlockKind::from_id(block).is_solid() {
                         continue;
                     }
 
+                    let mut exposed = false;
                     let world_pos = base + IVec3::new(x as i32, y as i32, z as i32);
-                    if self.block_has_exposed_face(world_pos) {
+
+                    // -X
+                    if x == 0 {
+                        exposed |= !self.is_solid_neighbor(
+                            neighbor_blocks[1],
+                            CHUNK_SIZE - 1,
+                            y,
+                            z,
+                            world_pos + IVec3::new(-1, 0, 0),
+                        );
+                    } else {
+                        exposed |=
+                            !BlockKind::from_id(blocks[Chunk::index(x - 1, y, z)]).is_solid();
+                    }
+
+                    if !exposed {
+                        // +X
+                        if x == CHUNK_SIZE - 1 {
+                            exposed |= !self.is_solid_neighbor(
+                                neighbor_blocks[0],
+                                0,
+                                y,
+                                z,
+                                world_pos + IVec3::new(1, 0, 0),
+                            );
+                        } else {
+                            exposed |=
+                                !BlockKind::from_id(blocks[Chunk::index(x + 1, y, z)]).is_solid();
+                        }
+                    }
+
+                    if !exposed {
+                        // -Y
+                        if y == 0 {
+                            exposed |= !self.is_solid_neighbor(
+                                neighbor_blocks[3],
+                                x,
+                                CHUNK_SIZE - 1,
+                                z,
+                                world_pos + IVec3::new(0, -1, 0),
+                            );
+                        } else {
+                            exposed |=
+                                !BlockKind::from_id(blocks[Chunk::index(x, y - 1, z)]).is_solid();
+                        }
+                    }
+
+                    if !exposed {
+                        // +Y
+                        if y == CHUNK_SIZE - 1 {
+                            exposed |= !self.is_solid_neighbor(
+                                neighbor_blocks[2],
+                                x,
+                                0,
+                                z,
+                                world_pos + IVec3::new(0, 1, 0),
+                            );
+                        } else {
+                            exposed |=
+                                !BlockKind::from_id(blocks[Chunk::index(x, y + 1, z)]).is_solid();
+                        }
+                    }
+
+                    if !exposed {
+                        // -Z
+                        if z == 0 {
+                            exposed |= !self.is_solid_neighbor(
+                                neighbor_blocks[5],
+                                x,
+                                y,
+                                CHUNK_SIZE - 1,
+                                world_pos + IVec3::new(0, 0, -1),
+                            );
+                        } else {
+                            exposed |=
+                                !BlockKind::from_id(blocks[Chunk::index(x, y, z - 1)]).is_solid();
+                        }
+                    }
+
+                    if !exposed {
+                        // +Z
+                        if z == CHUNK_SIZE - 1 {
+                            exposed |= !self.is_solid_neighbor(
+                                neighbor_blocks[4],
+                                x,
+                                y,
+                                0,
+                                world_pos + IVec3::new(0, 0, 1),
+                            );
+                        } else {
+                            exposed |=
+                                !BlockKind::from_id(blocks[Chunk::index(x, y, z + 1)]).is_solid();
+                        }
+                    }
+
+                    if exposed {
                         mask[index] = true;
                     }
                 }
@@ -220,25 +340,24 @@ impl World {
         Some(mask)
     }
 
-    fn block_has_exposed_face(&self, position: IVec3) -> bool {
-        const NEIGHBORS: [IVec3; 6] = [
-            IVec3::new(1, 0, 0),
-            IVec3::new(-1, 0, 0),
-            IVec3::new(0, 1, 0),
-            IVec3::new(0, -1, 0),
-            IVec3::new(0, 0, 1),
-            IVec3::new(0, 0, -1),
-        ];
-
-        for offset in NEIGHBORS {
-            let neighbor_pos = position + offset;
-            let block = self.sample_block(neighbor_pos);
-            if !BlockKind::from_id(block).is_solid() {
-                return true;
-            }
+    fn is_solid_neighbor(
+        &self,
+        neighbor: Option<&[BlockId]>,
+        x: usize,
+        y: usize,
+        z: usize,
+        fallback_world: IVec3,
+    ) -> bool {
+        if let Some(blocks) = neighbor {
+            BlockKind::from_id(blocks[Chunk::index(x, y, z)]).is_solid()
+        } else {
+            BlockKind::from_id(procedural_block(
+                fallback_world.x,
+                fallback_world.y,
+                fallback_world.z,
+            ))
+            .is_solid()
         }
-
-        false
     }
 }
 
