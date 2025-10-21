@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     f32::consts::PI,
+    time::Instant,
 };
 
 use glam::IVec3;
@@ -70,18 +71,42 @@ impl World {
     }
 
     pub fn ensure_chunk(&mut self, coord: ChunkCoord) {
-        let mut inserted = false;
+        let mut inserted_metrics: Option<(f32, usize)> = None;
         match self.chunks.entry(coord) {
             Entry::Occupied(_) => {}
             Entry::Vacant(vacant) => {
+                let start = Instant::now();
                 let chunk = generate_chunk(coord);
+                let generation_ms = start.elapsed().as_secs_f32() * 1000.0;
+                let solid_blocks = chunk
+                    .blocks()
+                    .iter()
+                    .filter(|&&block| block != BLOCK_AIR)
+                    .count();
                 vacant.insert(chunk);
-                inserted = true;
+                inserted_metrics = Some((generation_ms, solid_blocks));
             }
         }
 
-        if inserted {
+        if let Some((generation_ms, solid_blocks)) = inserted_metrics {
+            let visibility_start = Instant::now();
             self.recompute_visibility_around(coord);
+            let visibility_ms = visibility_start.elapsed().as_secs_f32() * 1000.0;
+
+            let visible_blocks = self
+                .chunks
+                .get(&coord)
+                .map(|chunk| chunk.visible_mask().iter().filter(|&&v| v).count())
+                .unwrap_or(0);
+
+            log::debug!(
+                "Loaded chunk {:?}: gen {:.2} ms, vis {:.2} ms, solid {}, visible {}",
+                coord,
+                generation_ms,
+                visibility_ms,
+                solid_blocks,
+                visible_blocks
+            );
         }
     }
 
