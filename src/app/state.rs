@@ -10,6 +10,7 @@ use crate::camera::{Camera, CameraUniform, Projection};
 use crate::config::{self, AppConfig, RenderMethodSetting};
 use crate::fps::FpsCounter;
 use crate::input::{CameraController, MouseState};
+use crate::physics::{MovementMode, PlayerPhysics};
 use crate::render::{FrameContext, RasterRenderer, RayTraceRenderer, RenderTimings, Renderer};
 use crate::text::DebugOverlay;
 use crate::texture::TextureAtlas;
@@ -44,6 +45,7 @@ pub struct AppState {
     chunk_radius: i32,
     chunk_vertical_radius: i32,
     chunk_unload_margin: i32,
+    player: PlayerPhysics,
 }
 
 impl AppState {
@@ -182,6 +184,7 @@ impl AppState {
         };
 
         let debug_overlay = DebugOverlay::new(&device, &queue, surface_config.format);
+        let player = PlayerPhysics::from_camera(camera.position);
 
         Self {
             window,
@@ -208,6 +211,7 @@ impl AppState {
             chunk_radius: CHUNK_LOAD_RADIUS,
             chunk_vertical_radius: CHUNK_VERTICAL_RADIUS,
             chunk_unload_margin: CHUNK_UNLOAD_MARGIN,
+            player,
         }
     }
 
@@ -274,6 +278,11 @@ impl AppState {
                         self.set_mouse_capture(false);
                         return true;
                     }
+                    if is_pressed && key == VirtualKeyCode::F {
+                        self.player.toggle_mode();
+                        log::info!("Movement mode {:?}", self.player.mode());
+                        return true;
+                    }
                     self.camera_controller.process_keyboard(key, is_pressed)
                 } else {
                     false
@@ -312,7 +321,11 @@ impl AppState {
         let dt_seconds = dt.as_secs_f32();
 
         self.camera_controller
-            .update_camera(&mut self.camera, dt_seconds);
+            .update_orientation(&mut self.camera, dt_seconds);
+        let movement_intent = self.camera_controller.movement_input(&self.camera);
+        self.player
+            .update(&self.world, dt_seconds, &movement_intent);
+        self.camera.position = self.player.camera_position();
         self.camera_uniform.update(&self.camera, &self.projection);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -375,9 +388,15 @@ impl AppState {
         }
         let _ = writeln!(&mut chunk_grid, "C=current chunk, #=loaded");
 
+        let mode_label = match self.player.mode() {
+            MovementMode::Fly => "Fly",
+            MovementMode::Walk => "Walk",
+        };
+
         let debug_text = format!(
             r#"
 Renderer: {}
+Mode: {}
 FPS: {:>5.1}
 Frame: {:>6.2} ms
 POS: {:+5.1} {:+5.1} {:+5.1}
@@ -387,6 +406,7 @@ GPU Blocks: {:>7}
 {}
 "#,
             self.renderer.kind().as_str(),
+            mode_label,
             fps,
             self.last_frame_time * 1000.0,
             pos.x,

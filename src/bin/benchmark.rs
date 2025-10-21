@@ -12,6 +12,8 @@ mod config;
 mod fps;
 #[path = "../input.rs"]
 mod input;
+#[path = "../physics.rs"]
+mod physics;
 #[path = "../render/mod.rs"]
 mod render;
 #[path = "../text.rs"]

@@ -4,6 +4,7 @@ mod camera;
 mod config;
 mod fps;
 mod input;
+mod physics;
 mod render;
 mod text;
 mod texture;

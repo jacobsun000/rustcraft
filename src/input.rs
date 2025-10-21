@@ -21,6 +21,7 @@ pub struct CameraController {
     pitch_down_pressed: bool,
     yaw: f32,
     pitch: f32,
+    up_triggered: bool,
 }
 
 impl CameraController {
@@ -41,6 +42,7 @@ impl CameraController {
             pitch_down_pressed: false,
             yaw: 0.0,
             pitch: 0.0,
+            up_triggered: false,
         }
     }
 
@@ -58,6 +60,9 @@ impl CameraController {
             self.right_pressed = is_pressed;
             true
         } else if key == self.key_bindings.up {
+            if is_pressed {
+                self.up_triggered = true;
+            }
             self.up_pressed = is_pressed;
             true
         } else if key == self.key_bindings.down {
@@ -91,34 +96,7 @@ impl CameraController {
         self.pitch -= delta.1 * sensitivity;
     }
 
-    pub fn update_camera(&mut self, camera: &mut Camera, dt_seconds: f32) {
-        let forward = camera.forward();
-        let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
-
-        let mut move_dir = glam::Vec3::ZERO;
-        if self.forward_pressed {
-            move_dir += forward;
-        }
-        if self.backward_pressed {
-            move_dir -= forward;
-        }
-        if self.left_pressed {
-            move_dir -= right;
-        }
-        if self.right_pressed {
-            move_dir += right;
-        }
-        if self.up_pressed {
-            move_dir += glam::Vec3::Y;
-        }
-        if self.down_pressed {
-            move_dir -= glam::Vec3::Y;
-        }
-
-        if move_dir.length_squared() > 0.0 {
-            camera.position += move_dir.normalize() * self.speed * dt_seconds;
-        }
-
+    pub fn update_orientation(&mut self, camera: &mut Camera, dt_seconds: f32) {
         let yaw_delta = (self.yaw_right_pressed as i32 - self.yaw_left_pressed as i32) as f32;
         let pitch_delta = (self.pitch_up_pressed as i32 - self.pitch_down_pressed as i32) as f32;
 
@@ -130,6 +108,35 @@ impl CameraController {
 
         self.yaw = 0.0;
         self.pitch = 0.0;
+    }
+
+    pub fn movement_input(&mut self, camera: &Camera) -> MovementInput {
+        let forward = camera.forward();
+        let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
+        let mut wish_dir = glam::Vec3::ZERO;
+        if self.forward_pressed {
+            wish_dir += forward;
+        }
+        if self.backward_pressed {
+            wish_dir -= forward;
+        }
+        if self.left_pressed {
+            wish_dir -= right;
+        }
+        if self.right_pressed {
+            wish_dir += right;
+        }
+
+        let jump = self.up_triggered;
+        self.up_triggered = false;
+
+        MovementInput {
+            wish_dir,
+            ascend: self.up_pressed,
+            descend: self.down_pressed,
+            jump,
+            speed: self.speed,
+        }
     }
 }
 
@@ -176,4 +183,13 @@ impl MouseState {
             std::thread::sleep(Duration::from_secs_f32(cap - frame_elapsed));
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct MovementInput {
+    pub wish_dir: glam::Vec3,
+    pub ascend: bool,
+    pub descend: bool,
+    pub jump: bool,
+    pub speed: f32,
 }
